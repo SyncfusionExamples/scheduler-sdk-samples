@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+
+<head>
+    <title>Staff Records / Roster</title>
+
+    <!-- Essential JS 2 combined bootstrap5.3 theme (all components) -->
+    <link href="https://cdn.syncfusion.com/ej2/34.1.29/tailwind3.css" rel="stylesheet" type="text/css" />
+    <!-- Essential JS 2 combined script (all components) -->
+    <script src="https://cdn.syncfusion.com/ej2/34.1.29/dist/ej2.min.js" type="text/javascript"></script>
+    
+    <style>
+        body {
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: #f6f7fb;
+            margin: 0;
+            padding: 16px;
+            color: #2b2b2b;
+        }
+
+        .controls-left {
+            float: left;
+            width: 230px;
+        }
+
+        #Tabs {
+            margin-left: 240px;
+        }
+
+        #picker-bar {
+            display: flex;
+            gap: 18px;
+            align-items: flex-end;
+            margin: 16px 0 12px 0;
+            padding: 14px 18px;
+            background: #f1f5fb;
+            border-radius: 8px;
+            border: 1px solid #e1e6ee;
+        }
+
+        .picker-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .picker-label {
+            font-size: 12px;
+            font-weight: 600;
+            color: #4a5b78;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+
+        #picker-bar input[type="text"] {
+            width: 180px;
+        }
+
+        .page-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 14px;
+            color: #555;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #e1e6ee;
+            margin-bottom: 4px;
+        }
+
+        .page-title {
+            font-size: 20px;
+            color: #2b2b2b;
+            font-weight: 600;
+        }
+
+        .stats {
+            display: flex;
+            gap: 10px;
+        }
+
+        .stat-pill {
+            background: #eef3fb;
+            border-radius: 4px;
+            padding: 6px 12px;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: #4a5b78;
+        }
+
+        .stat-pill .stat-value {
+            font-weight: 600;
+            color: #2b2b2b;
+        }
+
+        .stat-pill.green .stat-value {
+            color: #2c8a3b;
+        }
+
+        #tab_ratios {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 12px 0 12px 0;
+            font-size: 13px;
+            padding: 10px 14px;
+            background: #fafbfd;
+            border-radius: 6px;
+            border: 1px solid #eef0f4;
+        }
+
+        #tab_ratios .label {
+            color: #4a5b78;
+            font-weight: 600;
+        }
+
+        .ratio-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 14px;
+            font-size: 12px;
+            color: #2b2b2b;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .ratio-below .dot { background: #d9534f; }
+        .ratio-50 .dot { background: #d6a23a; }
+        .ratio-80 .dot { background: #4cae6f; }
+        .ratio-100 .dot { background: #1f8be2; }
+
+        .ratio-below { background: #fbe7e7; }
+        .ratio-50 { background: #fbf2dd; }
+        .ratio-80 { background: #dff3e6; }
+        .ratio-100 { background: #d9eaf8; }
+
+        /* Color-coded cells (set via queryCellInfo) */
+        .cell-below { background: #fbe7e7 !important; }
+        .cell-50    { background: #fbf2dd !important; }
+        .cell-80    { background: #dff3e6 !important; }
+        .cell-100   { background: #d9eaf8 !important; }
+
+        .header-row {
+            background: #4a5b78 !important;
+            color: #fff !important;
+            font-weight: 600;
+        }
+
+        /* Compact dropdown inside grid cell */
+        .e-grid .e-rowcell .e-dropdownlist {
+            width: 100%;
+            border: 0;
+            background: transparent;
+        }
+        .e-grid .e-rowcell .e-dropdownlist .e-input {
+            background: transparent;
+            border: 0;
+        }
+        .e-grid .e-rowcell .e-dropdownlist.e-input-focus,
+        .e-grid .e-rowcell .e-dropdownlist.e-focus {
+            box-shadow: none;
+        }
+
+        /* Make Top-bar inputs interactive and clearly clickable */
+        #picker-bar .e-input-group {
+            background: #fff;
+            cursor: pointer;
+            border-radius: 6px;
+            border: 1px solid #ccd4e0;
+        }
+        #picker-bar .e-input-group:hover { box-shadow: 0 0 0 2px rgba(13,110,253,.15); border-color: #86b7fe; }
+        #picker-bar .e-input-group.e-focus { box-shadow: 0 0 0 2px rgba(13,110,253,.35); border-color: #1f6fb2; }
+
+        /* Tab styling - make headers clickable / hoverable */
+        .e-tab .e-tab-header .e-tab-link,
+        .e-tab .e-tab-header .e-toolbar-item {
+            cursor: pointer;
+        }
+        .e-tab .e-tab-header .e-toolbar-item:hover { background: rgba(13,110,253,.08); }
+
+        /* TimePicker / DatePicker value text - keep visible */
+        #startTime input.e-input,
+        #endTime input.e-input,
+        #datePicker input.e-input {
+            color: #2b2b2b !important;
+            font-weight: 500;
+            opacity: 1 !important;
+            -webkit-text-fill-color: #2b2b2b;
+        }
+        .section {
+            margin-top: 20px;
+            background: #ffffff;
+            border-radius: 8px;
+            border: 1px solid #e1e6ee;
+            border-left: 4px solid #1f6fb2;
+            padding: 12px 8px 16px 8px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+        }
+
+        .section-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 6px 14px 12px 14px;
+            border-bottom: 1px solid #f0f2f6;
+            margin-bottom: 10px;
+        }
+
+        .section-title .section-icon {
+            font-size: 20px;
+            line-height: 1;
+        }
+
+        .section-title .section-text {
+            font-size: 15px;
+            font-weight: 700;
+            color: #2b2b2b;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .section-title .section-sub {
+            font-size: 12px;
+            color: #8a8f99;
+            font-weight: 400;
+            margin-left: auto;
+            letter-spacing: 0;
+            text-transform: none;
+        }
+
+        #Grid {
+            background: #fff;
+            border-radius: 6px;
+            padding: 4px;
+            clear: both;
+        }
+
+        /* Schedule container */
+        #Schedule {
+            background: #fff;
+            border-radius: 6px;
+            padding: 4px;
+            margin-bottom: 16px;
+            clear: both;
+        }
+    </style>
+</head>
+        
+    <!-- Header / title row -->
+    <div class="page-header">
+        <div class="page-title"><h3>Syncfusion Roster</h3></div>
+    </div>
+
+   
+    <!-- Start Time, End Time, and Date pickers -->
+    <div id="picker-bar">
+        <div class="picker-group">
+            <label for="datePicker" class="picker-label">Date</label>
+            <input id="datePicker" type="text" placeholder="Select date" />
+        </div>
+        <div class="picker-group">
+            <label for="startTime" class="picker-label">Start Time</label>
+            <input id="startTime" type="text" placeholder="Start time" />
+        </div>
+        <div class="picker-group">
+            <label for="endTime" class="picker-label">End Time</label>
+            <input id="endTime" type="text" placeholder="End time" />
+        </div>
+    </div>
+    
+    <div id="tab_ratios">
+        <span class="label">Ratios</span>
+        <span class="ratio-pill ratio-below"><span class="dot"></span>Below 50%</span>
+        <span class="ratio-pill ratio-50"><span class="dot"></span>50-79%</span>
+        <span class="ratio-pill ratio-80"><span class="dot"></span>80-99%</span>
+        <span class="ratio-pill ratio-100"><span class="dot"></span>100%</span>
+    </div>
+
+    <div class="section">
+        <div class="section-title">
+            <span class="section-icon">📋</span>
+            <span class="section-text">Roster Grid</span>
+            <span class="section-sub">15-min slots &middot; per staff activity</span>
+        </div>
+        <div id="Grid"></div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">
+            <span class="section-icon">📅</span>
+            <span class="section-text">Staff Schedule</span>
+            <span class="section-sub">Weekly roaster &middot; 7 staffs</span>
+        </div>
+        <div id="Schedule"></div>
+    </div>
+
+    <script src="index.js" type="text/javascript"></script>
+</body>
+
+</html>
