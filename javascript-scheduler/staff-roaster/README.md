@@ -1,8 +1,8 @@
-# Syncfusion<sup>®</sup> JavaScript Schedule Samples
+# Syncfusion<sup>®</sup> JavaScript Scheduler Samples
 
-JavaScript (vanilla, ES5+) samples for the **Syncfusion<sup>®</sup> Schedule SDK**. Each sample in this directory is a small, self-contained project that demonstrates a specific Schedule feature and serves as a starting point for your own application.
+JavaScript (vanilla, ES5+) samples for the **Syncfusion<sup>®</sup> Scheduler SDK**. Each sample in this directory is a small, self-contained project that demonstrates a specific Scheduler feature and serves as a starting point for your own application.
 
-> Official Schedule SDK overview: <https://help.syncfusion.com/scheduler-sdk/overview>
+> Official Scheduler SDK overview: <https://help.syncfusion.com/scheduler-sdk/overview>
 >
 > Back to repo root: [schedule-sdk-samples](../../README.md)
 
@@ -12,9 +12,9 @@ JavaScript (vanilla, ES5+) samples for the **Syncfusion<sup>®</sup> Schedule SD
 
 | Sample | Folder | Component | Demonstrates |
 |---|---|---|---|
-| Staff Roster / Roster Grid + TimelineWeek Schedule | [staff-roaster](.) | Schedule, Grid, DatePicker, TimePicker, DropDownList | Editable 15-minute roster with in-cell per-staff `DropDownList`s; `TimelineWeek` Schedule grouped by staff that re-renders when any grid drop-down changes; `DatePicker` + `TimePicker` for the working window; `queryCellInfo` colour-codes the `Ratios` column. |
+| Staff Roster / Roster Grid + TimelineWeek Scheduler | [staff-roaster](.) | Scheduler, Grid, DatePicker, TimePicker, DropDownList | Editable 15-minute roster with in-cell per-staff `DropDownList`s; `TimelineWeek` Scheduler grouped by staff that re-renders when any grid drop-down changes; `DatePicker` + `TimePicker` for the working window; |
 
-This is the **only sample currently maintained** in this directory. New JavaScript Schedule samples will be added to the table above.
+This is the **only sample currently maintained** in this directory. New JavaScript Scheduler samples will be added to the table above.
 
 ---
 
@@ -84,8 +84,7 @@ Hosts that work out of the box: Vercel, Netlify, GitHub Pages, S3, Azure Static 
 
 Use the official user guide as the reference while exploring or extending any sample in this folder.
 
-- **JavaScript Schedule UG** — <https://ej2.syncfusion.com/javascript/documentation/schedule/getting-started/>
-- **JavaScript Grid UG** — <https://ej2.syncfusion.com/javascript/documentation/grid/getting-started/>
+- **JavaScript Scheduler UG** — <https://help.syncfusion.com/scheduler-sdk/javascript/schedule/getting-started>
 
 ---
 
@@ -101,7 +100,7 @@ The page is laid out as five vertical sections inside a single HTML file:
 2. **Picker bar** — a `DatePicker`, a start-time `TimePicker`, and an end-time `TimePicker`.
 3. **Ratio legend** — color-coded pills for `Below 50%`, `50–79%`, `80–99%`, `100%`. The `Ratios` column in the grid is filled with the same colors via `queryCellInfo`.
 4. **Roster Grid** — one row per 15-minute slot between **08:45** and **19:00**. Columns: `Time`, `U2 , O2` (staff count), `Require...`, `Ratios`, then one editable column per staff member (drop-down of activities).
-5. **Staff Schedule** — a `Schedule` in `TimelineWeek` view, grouped by date and then by `Staffs` resource, showing each staff member's day as colour-coded blocks.
+5. **Staff Scheduler** — a `Scheduler` in `TimelineWeek` view, grouped by date and then by `Staffs` resource, showing each staff member's day as colour-coded blocks.
 
 ### Tech stack
 
@@ -121,7 +120,7 @@ The combined script and theme are both pulled from:
 
 ### How to use the page
 
-1. Pick a **date** between `Mon 29 Jun 2026` and `Sun 5 Jul 2026` using the date picker. The grid and schedule jump to that day.
-2. Adjust the **Start Time** and **End Time** to filter the grid to a time window. The schedule stays full-day, but the grid only shows rows inside the window.
-3. In the grid, change any staff member's drop-down to assign a different activity for that 15-minute slot. The corresponding colour-coded block on the schedule updates immediately.
+1. Pick a **date** between `Mon 29 Jun 2026` and `Sun 5 Jul 2026` using the date picker. The grid and scheduler jump to that day.
+2. Adjust the **Start Time** and **End Time** to filter the grid to a time window. The scheduler stays full-day, but the grid only shows rows inside the window.
+3. In the grid, change any staff member's drop-down to assign a different activity for that 15-minute slot. The corresponding colour-coded block on the scheduler updates immediately.
 4. Use the **Ratios** legend to interpret the colour of the `Ratios` column in each row.
