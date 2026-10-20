@@ -27,6 +27,20 @@ Syncfusion client assets are **already included** in `wwwroot/lib/syncfusion` (`
 To refresh them, run `libman restore` (see `libman.json`) or copy them from the `@syncfusion/ej2` npm package.
 Keep this version the same as the NuGet package version.
 
+### Hosting under a sub-path (e.g. Azure `https://<app>.azurewebsites.net/range-reservation/`)
+
+Set the `PathBase` setting. Every link, redirect, static file, API call and the auth cookie path then uses that prefix.
+
+- **Azure App Service:** go to *Settings → Environment variables → App settings* and add `PathBase` = `/range-reservation`.
+- **Or** set `"PathBase": "/range-reservation"` in `appsettings.json`.
+
+Where the prefix is applied:
+- **Server:** `Program.cs` calls `app.UsePathBase(...)` as the first middleware.
+- **Views:** use `~/` and the `asp-*` tag helpers.
+- **JavaScript:** calls go through `appUrl('/api/...')`. `window.appBase` is rendered in `_Layout.cshtml`.
+
+This works for Linux and Windows App Service. On Windows you can instead create a *Virtual application* `/range-reservation`; there the hosting module sets the prefix itself and `PathBase` can stay empty. Setting both does no harm.
+
 ### Demo personas
 
 | Persona | Role / tier | What to show |

@@ -99,7 +99,7 @@ function toServer(e) {
    API
    ------------------------------------------------------------------------------------------ */
 async function api(url, options) {
-    const res = await fetch(url, Object.assign({ headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin' }, options || {}));
+    const res = await fetch(appUrl(url), Object.assign({ headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin' }, options || {}));
     let body = null;
     try { body = await res.json(); } catch { /* empty body */ }
     return { ok: res.ok, status: res.status, body };
@@ -581,7 +581,7 @@ function renderPolicyCard() {
             <li>Drag, resize and edit any reservation</li>
             <li>Book on behalf of any customer</li>
             <li>Optional tier-rule override (conflicts, blackouts and safety rules always apply)</li>
-            <li>Manage <a href="/Admin/Blackouts">blackouts</a> and <a href="/Admin/Policies">tier policies</a></li>
+            <li>Manage <a href="${appUrl('/Admin/Blackouts')}">blackouts</a> and <a href="${appUrl('/Admin/Policies')}">tier policies</a></li>
           </ul>`;
         return;
     }

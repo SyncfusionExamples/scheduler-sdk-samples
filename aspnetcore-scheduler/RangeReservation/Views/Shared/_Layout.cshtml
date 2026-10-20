@@ -13,6 +13,11 @@
        Run `libman restore` (see libman.json) or copy them from the @syncfusion/ej2 npm package. *@
     <link rel="stylesheet" href="~/lib/syncfusion/tailwind3.css" asp-append-version="true" />
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+    <script>
+        // Application base path ("" at the site root, "/range-reservation" when hosted under a sub-path).
+        window.appBase = '@Url.Content("~/")'.replace(/\/$/, '');
+        window.appUrl = function (path) { return window.appBase + path; };
+    </script>
     <script src="~/lib/syncfusion/ej2.min.js"></script>
     <script>
         // On-prem / state compliance: turn off Syncfusion's anonymous component-usage telemetry
@@ -32,11 +37,11 @@
         @if (user is not null)
         {
             <nav class="app-nav">
-                <a href="/" class="@(path == "/" || path.StartsWith("/Home") ? "active" : "")">Scheduler</a>
+                <a href="~/" class="@(path == "/" || path.StartsWith("/Home") ? "active" : "")">Scheduler</a>
                 @if (user.Role == Roles.Admin)
                 {
-                    <a href="/Admin/Blackouts" class="@(path.StartsWith("/Admin/Blackouts") ? "active" : "")">Blackouts</a>
-                    <a href="/Admin/Policies" class="@(path.StartsWith("/Admin/Policies") ? "active" : "")">Tier policies</a>
+                    <a href="~/Admin/Blackouts" class="@(path.StartsWith("/Admin/Blackouts") ? "active" : "")">Blackouts</a>
+                    <a href="~/Admin/Policies" class="@(path.StartsWith("/Admin/Policies") ? "active" : "")">Tier policies</a>
                 }
             </nav>
             <div class="user-chip">
