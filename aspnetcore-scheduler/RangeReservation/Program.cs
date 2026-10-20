@@ -41,7 +41,28 @@ builder.Services.AddSingleton<IQualificationRegistry, MockQualificationRegistry>
 builder.Services.AddSingleton<ReservationRulesEngine>();
 builder.Services.AddSingleton<ReservationService>();
 
+// ---------------------------------------------------------------------------
+// Sub-path hosting, e.g. https://<app>.azurewebsites.net/range-reservation/
+// Set "PathBase" in appsettings.json or as an App Service application setting (PathBase=/range-reservation).
+// Every URL the app produces (~/..., asp-action, redirects, cookie path, JS API calls) is then prefixed with it.
+// ---------------------------------------------------------------------------
+var pathBase = (builder.Configuration["PathBase"] ?? "").Trim().TrimEnd('/');
+if (pathBase.Length > 0 && !pathBase.StartsWith('/')) pathBase = "/" + pathBase;
+if (pathBase.Length > 0)
+{
+    // Scope the auth cookie to the sub-path so other apps on the same host don't receive it.
+    builder.Services.PostConfigure<CookieAuthenticationOptions>(CookieAuthenticationDefaults.AuthenticationScheme,
+        o => o.Cookie.Path = pathBase);
+}
+
 var app = builder.Build();
+
+if (pathBase.Length > 0)
+{
+    // Must be first: strips "/range-reservation" from the request path and stores it in Request.PathBase.
+    // Requests that already arrive without the prefix (e.g. an IIS virtual application) pass through unchanged.
+    app.UsePathBase(pathBase);
+}
 
 if (!app.Environment.IsDevelopment())
 {

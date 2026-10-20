@@ -34,7 +34,7 @@
     function fmt(d) { return d.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }); }
 
     async function load() {
-        const res = await fetch('/api/blackouts', { credentials: 'same-origin' });
+        const res = await fetch(appUrl('/api/blackouts'), { credentials: 'same-origin' });
         const list = await res.json();
         const tbody = document.getElementById('bList');
         tbody.innerHTML = list.length ? '' : '<tr><td colspan="5" class="muted">No blackouts</td></tr>';
@@ -49,7 +49,7 @@
             tbody.appendChild(tr);
         });
         tbody.querySelectorAll('[data-del]').forEach(btn => btn.onclick = async () => {
-            await fetch('/api/blackouts/' + btn.dataset.del, { method: 'DELETE', credentials: 'same-origin' });
+            await fetch(appUrl('/api/blackouts/' + btn.dataset.del), { method: 'DELETE', credentials: 'same-origin' });
             toast.show({ title: 'Blackout deleted', cssClass: 'e-toast-success' }); load();
         });
         tbody.querySelectorAll('[data-edit]').forEach(btn => btn.onclick = () => edit(list.find(x => x.Id === +btn.dataset.edit)));
@@ -88,7 +88,7 @@
             RangeId: sc.startsWith('r') ? +sc.slice(1) : null,
             FacilityId: sc.startsWith('f') ? +sc.slice(1) : null
         };
-        const res = await fetch('/api/blackouts', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        const res = await fetch(appUrl('/api/blackouts'), { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         const body = await res.json().catch(() => ({}));
         const out = document.getElementById('bResult');
         if (res.ok) {

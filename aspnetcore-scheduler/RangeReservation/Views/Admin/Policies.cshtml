@@ -57,7 +57,7 @@
                     const p = policies.find(x => x.Tier === i.dataset.tier);
                     p[i.dataset.key] = i.type === 'checkbox' ? i.checked : Number(i.value);
                 });
-                const res = await fetch('/api/policies', { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(policies) });
+                const res = await fetch(appUrl('/api/policies'), { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(policies) });
                 const body = await res.json().catch(() => ({}));
                 document.getElementById('policyResult').innerHTML = res.ok
                     ? '<div class="msg ok">Policies saved.</div>'
