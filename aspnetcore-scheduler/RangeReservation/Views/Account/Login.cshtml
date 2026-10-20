@@ -1,0 +1,31 @@
+@model List<AppUser>
+@{
+    ViewData["Title"] = "Sign in";
+}
+<section class="login">
+    <h1>Choose a demo persona</h1>
+    <p class="muted">
+        The POC uses local cookie authentication with an <strong>Admin</strong> role and four <strong>customer tiers</strong>.
+        In production this plugs into the customer's on-prem identity provider (AD / ADFS / OIDC) - no cloud identity service is required.
+    </p>
+    <div class="persona-grid">
+        @foreach (var u in Model)
+        {
+            <form method="post" asp-action="Login" class="persona">
+                <input type="hidden" name="userId" value="@u.Id" />
+                <button type="submit" class="persona-card">
+                    <span class="persona-name">@u.Name</span>
+                    @if (u.Role == Roles.Admin)
+                    {
+                        <span class="badge badge-admin">Administrator</span>
+                    }
+                    else
+                    {
+                        <span class="badge tier-@u.Tier?.ToString().ToLower()">@u.Tier tier</span>
+                    }
+                    <span class="persona-desc">@u.Description</span>
+                </button>
+            </form>
+        }
+    </div>
+</section>

@@ -1,0 +1,41 @@
+@{
+    ViewData["Title"] = "Blackouts";
+}
+<div class="admin-grid">
+    <section class="card">
+        <h3 id="formTitle">New blackout window</h3>
+        <p class="muted small">Blackouts hard-block booking for everyone (including admins). Scope them to all facilities, one facility or a single range, one-time or recurring.</p>
+        <div class="form-stack">
+            <input id="bTitle" />
+            <input id="bScope" />
+            <div class="row2">
+                <input id="bStart" />
+                <input id="bEnd" />
+            </div>
+            <input id="bAllDay" type="checkbox" />
+            <div style="margin-top:8px"><strong class="small">Repeat</strong></div>
+            <div id="bRecurrence"></div>
+            <input id="bReason" />
+            <div class="cart-actions">
+                <button id="bSave" class="e-btn e-primary">Save blackout</button>
+                <button id="bReset" class="e-btn e-flat">New</button>
+            </div>
+            <div id="bResult" class="result"></div>
+        </div>
+    </section>
+
+    <section class="card">
+        <h3>Blackout windows</h3>
+        <table class="data">
+            <thead><tr><th>Title</th><th>Scope</th><th>When</th><th>Repeat</th><th></th></tr></thead>
+            <tbody id="bList"><tr><td colspan="5" class="muted">Loading...</td></tr></tbody>
+        </table>
+    </section>
+</div>
+
+@section Scripts {
+    <script>
+        window.blackoutScopes = @Html.Raw(Json.Serialize(ViewBag.Scopes));
+    </script>
+    <script src="~/js/blackouts.js" asp-append-version="true"></script>
+}

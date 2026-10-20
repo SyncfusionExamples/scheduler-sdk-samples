@@ -1,0 +1,68 @@
+@model List<TierPolicy>
+@{
+    ViewData["Title"] = "Tier policies";
+    var fields = new (string Key, string Label)[]
+    {
+        ("AdvanceBookingDays", "Book ahead (days)"), ("MinLeadHours", "Lead time (h)"), ("MaxHoursPerBooking", "Max hours / booking"),
+        ("MaxBookingsPerDay", "Bookings / day"), ("MaxActiveFutureBookings", "Upcoming bookings"), ("MaxHoursPerMonth", "Hours / month"),
+        ("MaxRecurringOccurrences", "Max recurring occurrences"), ("MaxSlotsPerTransaction", "Slots / transaction"), ("CancellationCutoffHours", "Change/cancel cutoff (h)")
+    };
+}
+<section class="card">
+    <h3>Tier booking policies</h3>
+    <p class="muted small">Changes apply immediately to new bookings and edits (validated server-side). Range-level limits (capacity, firearm types, qualification, minimum tier) are configured per range.</p>
+    <table class="data" id="policyTable">
+        <thead>
+            <tr>
+                <th>Rule</th>
+                @foreach (var p in Model)
+                {
+                    <th><span class="badge tier-@p.Tier.ToString().ToLower()">@p.DisplayName</span><div class="muted small">@p.Audience</div></th>
+                }
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var f in fields)
+            {
+                <tr>
+                    <td>@f.Label</td>
+                    @foreach (var p in Model)
+                    {
+                        var value = typeof(TierPolicy).GetProperty(f.Key)!.GetValue(p);
+                        <td><input type="number" min="0" data-tier="@p.Tier" data-key="@f.Key" value="@value" /></td>
+                    }
+                </tr>
+            }
+            <tr>
+                <td>Recurring allowed</td>
+                @foreach (var p in Model)
+                {
+                    <td><input type="checkbox" data-tier="@p.Tier" data-key="AllowRecurring" @(p.AllowRecurring ? "checked" : "") /></td>
+                }
+            </tr>
+        </tbody>
+    </table>
+    <div class="cart-actions">
+        <button id="savePolicies" class="e-btn e-primary">Save policies</button>
+    </div>
+    <div id="policyResult" class="result"></div>
+</section>
+
+@section Scripts {
+    <script>
+        (function () {
+            const policies = @Html.Raw(Json.Serialize(Model));
+            document.getElementById('savePolicies').onclick = async () => {
+                document.querySelectorAll('#policyTable input').forEach(i => {
+                    const p = policies.find(x => x.Tier === i.dataset.tier);
+                    p[i.dataset.key] = i.type === 'checkbox' ? i.checked : Number(i.value);
+                });
+                const res = await fetch('/api/policies', { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(policies) });
+                const body = await res.json().catch(() => ({}));
+                document.getElementById('policyResult').innerHTML = res.ok
+                    ? '<div class="msg ok">Policies saved.</div>'
+                    : '<div class="msg err">' + (body.Errors || ['Save failed']).join('<br/>') + '</div>';
+            };
+        })();
+    </script>
+}

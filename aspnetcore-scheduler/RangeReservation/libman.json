@@ -1,0 +1,11 @@
+{
+  "version": "3.0",
+  "defaultProvider": "unpkg",
+  "libraries": [
+    {
+      "library": "@syncfusion/ej2@35.1.41",
+      "destination": "wwwroot/lib/syncfusion/",
+      "files": [ "dist/ej2.min.js", "tailwind3.css" ]
+    }
+  ]
+}
