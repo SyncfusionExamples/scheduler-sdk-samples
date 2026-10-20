@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>RangeReservationPoc</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Syncfusion ASP.NET Core (EJ2) controls - Scheduler, DropDownList, DatePicker, RecurrenceEditor, etc.
+         Keep this version in sync with the client scripts/styles in wwwroot/lib/syncfusion (see libman.json). -->
+    <PackageReference Include="Syncfusion.EJ2.AspNet.Core" Version="35.1.41" />
+  </ItemGroup>
+
+</Project>

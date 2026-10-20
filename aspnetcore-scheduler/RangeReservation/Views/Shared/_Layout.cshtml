@@ -1,0 +1,68 @@
+@{
+    var user = ViewBag.User as AppUser;
+    var path = Context.Request.Path.Value ?? "/";
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@(ViewData["Title"] ?? "Range Reservations") · Arizona Range Reservations POC</title>
+
+    @* Syncfusion EJ2 theme + scripts are served from this app (wwwroot/lib/syncfusion) - no CDN / cloud dependency.
+       Run `libman restore` (see libman.json) or copy them from the @syncfusion/ej2 npm package. *@
+    <link rel="stylesheet" href="~/lib/syncfusion/tailwind3.css" asp-append-version="true" />
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+    <script src="~/lib/syncfusion/ej2.min.js"></script>
+    <script>
+        // On-prem / state compliance: turn off Syncfusion's anonymous component-usage telemetry
+        // (it is only active on development hosts such as localhost, but we disable it explicitly).
+        if (window.ej && ej.base && ej.base.Telemetry) { ej.base.Telemetry.disable(); }
+    </script>
+</head>
+<body>
+    <header class="app-header">
+        <div class="brand">
+            <span class="brand-mark" aria-hidden="true"></span>
+            <div>
+                <div class="brand-title">Arizona Range Reservations</div>
+                <div class="brand-sub">Proof of concept · Syncfusion ASP.NET Core Scheduler</div>
+            </div>
+        </div>
+        @if (user is not null)
+        {
+            <nav class="app-nav">
+                <a href="/" class="@(path == "/" || path.StartsWith("/Home") ? "active" : "")">Scheduler</a>
+                @if (user.Role == Roles.Admin)
+                {
+                    <a href="/Admin/Blackouts" class="@(path.StartsWith("/Admin/Blackouts") ? "active" : "")">Blackouts</a>
+                    <a href="/Admin/Policies" class="@(path.StartsWith("/Admin/Policies") ? "active" : "")">Tier policies</a>
+                }
+            </nav>
+            <div class="user-chip">
+                <div class="user-meta">
+                    <div class="user-name">@user.Name</div>
+                    <div class="user-role">
+                        @if (user.Role == Roles.Admin) { <span class="badge badge-admin">Administrator</span> }
+                        else { <span class="badge tier-@user.Tier?.ToString().ToLower()">@user.Tier tier</span> }
+                    </div>
+                </div>
+                <form method="post" asp-controller="Account" asp-action="Logout">
+                    <button type="submit" class="e-btn e-small e-outline">Switch user</button>
+                </form>
+            </div>
+        }
+    </header>
+
+    <main class="app-main">
+        @RenderBody()
+    </main>
+
+    <div id="toast"></div>
+
+    @await RenderSectionAsync("Scripts", required: false)
+
+    @* Renders the initialization scripts for every Syncfusion tag helper on the page. Must stay last. *@
+    <ejs-scripts></ejs-scripts>
+</body>
+</html>
