@@ -33,10 +33,114 @@ public class InMemoryDataStore
     public List<Reservation> Reservations { get; } = new();
     public List<Blackout> Blackouts { get; } = new();
     public List<NotificationRecord> Notifications { get; } = new();
+    public List<OnboardingApplication> OnboardingApplications { get; } = new();
+    public List<ComplianceDocument> ComplianceDocuments { get; } = new();
+    public List<ComplianceExpirationEvent> ExpirationEvents { get; } = new();
     private int _reservationSeq = 1000;
     private int _blackoutSeq = 0;
     private int _requestSeq = 10230;
     private int _notificationSeq = 0;
+    private int _applicationSeq = 1000;
+    private int _docSeq = 1000;
+    private int _eventSeq = 1000;
+
+    // ==================== Onboarding & Compliance CRUD Methods ====================
+
+    public void AddApplication(OnboardingApplication app)
+    {
+        lock (Sync)
+        {
+            app.Id = ++_applicationSeq;
+            OnboardingApplications.Add(app);
+        }
+    }
+
+    public OnboardingApplication? GetApplication(int id)
+    {
+        lock (Sync)
+            return OnboardingApplications.FirstOrDefault(a => a.Id == id);
+    }
+
+    public void UpdateApplication(OnboardingApplication app)
+    {
+        lock (Sync)
+        {
+            var existing = OnboardingApplications.FirstOrDefault(a => a.Id == app.Id);
+            if (existing != null)
+            {
+                OnboardingApplications.Remove(existing);
+                OnboardingApplications.Add(app);
+            }
+        }
+    }
+
+    public List<OnboardingApplication> GetAllApplications()
+    {
+        lock (Sync)
+            return new List<OnboardingApplication>(OnboardingApplications);
+    }
+
+    public void AddComplianceDocument(ComplianceDocument doc)
+    {
+        lock (Sync)
+        {
+            doc.Id = ++_docSeq;
+            ComplianceDocuments.Add(doc);
+        }
+    }
+
+    public ComplianceDocument? GetComplianceDocument(int id)
+    {
+        lock (Sync)
+            return ComplianceDocuments.FirstOrDefault(d => d.Id == id);
+    }
+
+    public void UpdateComplianceDocument(ComplianceDocument doc)
+    {
+        lock (Sync)
+        {
+            var existing = ComplianceDocuments.FirstOrDefault(d => d.Id == doc.Id);
+            if (existing != null)
+            {
+                ComplianceDocuments.Remove(existing);
+                ComplianceDocuments.Add(doc);
+            }
+        }
+    }
+
+    public List<ComplianceDocument> GetComplianceDocuments(int groupId)
+    {
+        lock (Sync)
+            return new List<ComplianceDocument>(ComplianceDocuments.Where(d => d.GroupId == groupId));
+    }
+
+    public List<ComplianceDocument> GetAllComplianceDocuments()
+    {
+        lock (Sync)
+            return new List<ComplianceDocument>(ComplianceDocuments);
+    }
+
+    public void AddComplianceExpirationEvent(ComplianceExpirationEvent evt)
+    {
+        lock (Sync)
+        {
+            evt.Id = ++_eventSeq;
+            ExpirationEvents.Add(evt);
+        }
+    }
+
+    public ComplianceExpirationEvent? GetComplianceExpirationEvent(int groupId, int documentId, string eventType)
+    {
+        lock (Sync)
+            return ExpirationEvents.FirstOrDefault(e => 
+                e.GroupId == groupId && e.DocumentId == documentId && e.EventType == eventType);
+    }
+
+    public List<ComplianceExpirationEvent> GetAllExpirationEvents()
+    {
+        lock (Sync)
+            return new List<ComplianceExpirationEvent>(ExpirationEvents);
+    }
 
     public InMemoryDataStore(FacilityClock clock)
     {

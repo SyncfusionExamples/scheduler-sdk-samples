@@ -49,6 +49,7 @@ builder.Services.AddSingleton<InMemoryDataStore>();
 builder.Services.AddSingleton<NotificationService>();
 builder.Services.AddSingleton<ReservationRulesEngine>();
 builder.Services.AddSingleton<ReservationService>();
+builder.Services.AddSingleton<OnboardingService>();
 
 
 if (pathBase.Length > 0)

@@ -122,6 +122,103 @@ public class SettingsInput
     public FacilitySettings Settings { get; set; } = new();
 }
 
+// ==================== UC-01, UC-02: Onboarding ======================
+
+/// <summary>UC-01: Submit corporate account application.</summary>
+public class OnboardingApplicationInput
+{
+    public string CompanyName { get; set; } = "";
+    public string CompanyType { get; set; } = "";
+    public string RegistrationNumber { get; set; } = "";
+    public string PrimaryContactName { get; set; } = "";
+    public string PrimaryContactEmail { get; set; } = "";
+    public string PrimaryContactPhone { get; set; } = "";
+    public string Address { get; set; } = "";
+}
+
+/// <summary>UC-01: Onboarding application summary for prospective users and admin review.</summary>
+public class OnboardingApplicationDto
+{
+    public int Id { get; set; }
+    public string CompanyName { get; set; } = "";
+    public string CompanyType { get; set; } = "";
+    public string PrimaryContactName { get; set; } = "";
+    public string PrimaryContactEmail { get; set; } = "";
+    public string Status { get; set; } = "";
+    public string? Tier { get; set; }
+    public string? ReviewedBy { get; set; }
+    public DateTime? ReviewedAt { get; set; }
+    public string? DenialReason { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public string? AdminNotes { get; set; }
+}
+
+/// <summary>UC-02: Admin approves or denies onboarding application.</summary>
+public class OnboardingReviewInput
+{
+    public int ApplicationId { get; set; }
+    public bool Approve { get; set; }
+    public int? TierId { get; set; }  // CustomerTier as int
+    public string? DenialReason { get; set; }
+    public string? AdminNotes { get; set; }
+}
+
+// ==================== UC-03, UC-04, UC-05: Compliance ======================
+
+/// <summary>UC-03: Upload compliance document.</summary>
+public class ComplianceDocumentUploadInput
+{
+    public int GroupId { get; set; }
+    public int DocumentType { get; set; }  // ComplianceDocumentType enum as int
+    public string FileName { get; set; } = "";
+    public string Base64Content { get; set; } = "";
+}
+
+/// <summary>UC-04: Admin verifies uploaded document and sets expiration.</summary>
+public class ComplianceDocumentVerifyInput
+{
+    public int DocumentId { get; set; }
+    public bool Verified { get; set; }
+    public DateTime? ExpirationDate { get; set; }
+    public string? PolicyNumber { get; set; }
+    public string? PolicyType { get; set; }
+    public string? CoverageLimits { get; set; }
+    public string? CertificateHolder { get; set; }
+    public string? ReviewNotes { get; set; }
+}
+
+/// <summary>UC-03, UC-04, UC-05: Compliance document summary for dashboard.</summary>
+public class ComplianceDocumentDto
+{
+    public int Id { get; set; }
+    public int GroupId { get; set; }
+    public string DocumentType { get; set; } = "";
+    public string FileName { get; set; } = "";
+    public string Status { get; set; } = "";
+    public DateTime? ExpirationDate { get; set; }
+    public DateTime UploadedAt { get; set; }
+    public string? VerifiedBy { get; set; }
+    public DateTime? VerifiedAt { get; set; }
+    public string? ReviewNotes { get; set; }
+    /// <summary>UC-05: Days until expiration, or negative if already expired.</summary>
+    public int? DaysUntilExpiration { get; set; }
+    /// <summary>UC-05: Compliance status indicator for the dashboard.</summary>
+    public string ComplianceStatus { get; set; } = "";  // "Verified", "Expiring Soon", "Expired", "Pending Review"
+}
+
+/// <summary>UC-01, UC-02, UC-05: Corporate group onboarding status for dashboard.</summary>
+public class CorporateGroupOnboardingDto
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public string Tier { get; set; } = "";
+    public string AccountStatus { get; set; } = "";
+    public string? ComplianceSummary { get; set; }  // e.g., "Verified through 2025-12-31" or "COI expired on 2024-11-15"
+    public List<ComplianceDocumentDto> Documents { get; set; } = new();
+    public bool BookingEnabled { get; set; }
+    public string? BookingBlockedReason { get; set; }  // UC-05: e.g., "Compliance expired"
+}
+
 /// <summary>Review queue / dashboard row - one request (cart transaction).</summary>
 public class RequestSummary
 {
