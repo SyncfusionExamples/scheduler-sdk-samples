@@ -19,7 +19,7 @@ public class AccountController : Controller
     public AccountController(InMemoryDataStore store) => _store = store;
 
     [HttpGet]
-    public IActionResult Login() => View(_store.Users);
+    public IActionResult Login() { ViewBag.Groups = _store.Groups; return View(_store.Users); }
 
     [HttpPost, ValidateAntiForgeryToken]
     public async Task<IActionResult> Login(string userId)
@@ -27,17 +27,32 @@ public class AccountController : Controller
         var user = _store.FindUser(userId);
         if (user is null) return RedirectToAction(nameof(Login));
 
+        // Clear any existing authentication before signing in new user
+        await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+
         var claims = new List<Claim>
         {
             new(ClaimTypes.NameIdentifier, user.Id),
             new(ClaimTypes.Name, user.Name),
             new(ClaimTypes.Role, user.Role),
         };
-        if (user.Tier is { } tier) claims.Add(new Claim("tier", tier.ToString()));
+        if (_store.FindGroup(user.GroupId) is { } group)
+        {
+            claims.Add(new Claim("group", group.Id.ToString()));
+            claims.Add(new Claim("tier", group.Tier.ToString()));
+        }
 
         await HttpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme,
             new ClaimsPrincipal(new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme)));
-        return RedirectToAction("Index", "Home");
+        // Route based on user role
+        if (user.Role == Roles.Admin)
+        {
+            return RedirectToAction("Queue", "Admin");
+        }
+        else
+        {
+            return RedirectToAction("Index", "Home");
+        }
     }
 
     [HttpPost, ValidateAntiForgeryToken]

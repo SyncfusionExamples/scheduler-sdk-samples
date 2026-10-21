@@ -1,5 +1,5 @@
 @{
-    ViewData["Title"] = "Scheduler";
+    ViewData["Title"] = "Book a range";
     var user = (AppUser)ViewBag.User;
     var isAdmin = user.Role == Roles.Admin;
     var now = (DateTime)ViewBag.Now;
@@ -17,23 +17,28 @@
 
         <section class="card cart" id="cartCard">
             <div class="card-head">
-                <h3>Multi-slot booking</h3>
+                <h3>Multi-date booking</h3>
                 <input id="cartMode" type="checkbox" />
             </div>
-            <p class="muted small">Turn on, then click slots on any range and any date. Everything is validated and booked as <strong>one all-or-nothing transaction</strong>.</p>
-            <ul id="cartList" class="cart-list"><li class="empty">No slots selected</li></ul>
+            <p class="muted small">Turn on, then click slots on <strong>one range</strong> across as many dates as you need.
+                All dates are submitted together as one request for admin review.</p>
+            <div id="cartRange" class="cart-range muted small">Range: <em>first slot you pick</em></div>
+            <ul id="cartList" class="cart-list"><li class="empty">No dates selected</li></ul>
             <div class="cart-fields">
                 <input id="cartSubject" />
-                <input id="cartFirearm" />
-                <div class="two">
-                    <input id="cartCaliber" />
-                    <input id="cartParticipants" />
-                </div>
-                <input id="cartQualification" />
                 @if (isAdmin)
                 {
-                    <input id="cartCustomer" />
+                    <input id="cartGroup" />
                 }
+                <div class="two">
+                    <input id="cartHeadcount" />
+                    <input id="cartTargetCount" />
+                </div>
+                <input id="cartFirearms" />
+                <div class="two">
+                    <input id="cartTargetType" />
+                    <input id="cartTargetDistance" />
+                </div>
                 <input id="cartRso" type="checkbox" />
                 <div class="two">
                     <input id="cartDayStart" />
@@ -43,7 +48,7 @@
             </div>
             <div class="cart-actions">
                 <button id="cartCheck" class="e-btn e-outline">Check availability</button>
-                <button id="cartBook" class="e-btn e-primary">Book all</button>
+                <button id="cartBook" class="e-btn e-primary">@(isAdmin ? "Book all" : "Submit for review")</button>
                 <button id="cartClear" class="e-btn e-flat">Clear</button>
             </div>
             <div id="cartResult" class="result"></div>
@@ -52,11 +57,12 @@
         <section class="card legend">
             <h3>Legend</h3>
             <ul>
-                <li><span class="sw sw-own"></span>@(isAdmin ? "Reservation (all customers)" : "My reservation")</li>
-                @if (!isAdmin) { <li><span class="sw sw-masked"></span>Reserved by someone else</li> }
+                <li><span class="sw sw-approved"></span>Approved@(isAdmin ? "" : " (my group)")</li>
+                <li><span class="sw sw-review"></span>Pending admin review</li>
+                <li><span class="sw sw-masked"></span>Reserved by another organization</li>
                 <li><span class="sw sw-block"></span>Blackout (hard block)</li>
-                <li><span class="sw sw-pending"></span>Pending multi-slot selection</li>
-                @if (!isAdmin) { <li><span class="sw sw-disabled"></span>Outside your tier's booking window / range</li> }
+                <li><span class="sw sw-pending"></span>Selected in cart (not submitted)</li>
+                @if (!isAdmin) { <li><span class="sw sw-disabled"></span>Not bookable for your group (Monday LE rule, booking window)</li> }
             </ul>
         </section>
     </aside>
@@ -64,11 +70,7 @@
     <section class="main-panel">
         <div class="toolbar-row">
             <div class="filter"><input id="facilityFilter" /></div>
-            @if (!isAdmin)
-            {
-                <input id="eligibleOnly" type="checkbox" />
-            }
-            else
+            @if (isAdmin)
             {
                 <input id="adminOverride" type="checkbox" />
             }
@@ -77,12 +79,14 @@
             <button id="refreshBtn" class="e-btn e-small">Refresh</button>
         </div>
 
-        @* ===================== Syncfusion ASP.NET Core Scheduler ===================== *@
+        @* ===================== Syncfusion ASP.NET Core Scheduler =====================
+           allowOverlap is on because UC-10 allows a group to double-book itself; overlaps with OTHER
+           organizations are hard-blocked by the server (and shown as "Reserved" blocks to everyone else). *@
         <ejs-schedule id="schedule" width="100%" height="780px"
                       selectedDate="@now.Date" currentView="TimelineDay"
                       startHour="06:00" endHour="21:00"
                       allowDragAndDrop="@isAdmin" allowResizing="@isAdmin"
-                      allowOverlap="false" showTimeIndicator="false"
+                      allowOverlap="true" showTimeIndicator="false"
                       showQuickInfo="true"
                       created="onScheduleCreated"
                       actionBegin="onActionBegin"

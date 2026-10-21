@@ -3,195 +3,194 @@ using RangeReservationPoc.Models;
 namespace RangeReservationPoc.Services;
 
 /// <summary>
-/// Authoritative, server-side booking rules. The Scheduler UI mirrors some of these for a better UX
-/// (greyed-out cells, hidden recurrence options) but every request is re-validated here.
+/// Authoritative, server-side booking rules. The Scheduler UI mirrors several of them for a better experience
+/// (greyed-out Mondays, hidden ranges, recurrence options, cart restrictions) but every request is re-validated here,
+/// and again when an administrator approves it.
 ///
 /// Rule groups:
-///   1. Hard blocks (always enforced, even for admins): conflicts, blackouts, operating hours, past dates.
-///   2. Range safety / compliance (always enforced): firearm type, participant capacity, qualification.
-///   3. Tier policy (enforced for customers; admins may override): range eligibility, advance window,
-///      lead time, duration, recurrence caps, per-day / active / monthly caps, transaction size.
+///   1. Hard rules (always enforced, admins included): availability across organizations (UC-10), blackouts (UC-13),
+///      Tier 4 Monday rule (UC-11), recurring end-date cap (UC-09), operating hours, past dates.
+///   2. Range rules (always enforced): specialized range permission (UC-14), firearm / target restrictions, headcount.
+///   3. Tier policy (enforced for corporate users; an admin may override): minimum tier, advance window, lead time,
+///      duration, recurring allowed.
 /// </summary>
 public class ReservationRulesEngine
 {
-    private readonly InMemoryDataStore _store;
-    private readonly IQualificationRegistry _qualifications;
-    public static readonly TimeSpan ValidationHorizon = TimeSpan.FromDays(731);
-
-    public ReservationRulesEngine(InMemoryDataStore store, IQualificationRegistry qualifications)
+    public static class Checks
     {
-        _store = store;
-        _qualifications = qualifications;
+        public const string Schedule = "Schedule & operating hours";
+        public const string Authorization = "Range authorization";
+        public const string Firearms = "Firearm restrictions";
+        public const string Headcount = "Headcount";
+        public const string Targets = "Target attributes";
+        public const string Availability = "Availability (no conflicts)";
+        public const string Blackouts = "Blackouts";
+        public const string Monday = "Tier 4 Monday rule";
+        public const string Recurrence = "Recurrence cap";
+        public const string TierPolicy = "Tier policy";
+
+        public static readonly string[] All = { Schedule, Authorization, Firearms, Headcount, Targets, Availability, Blackouts, Monday, Recurrence, TierPolicy };
+        /// <summary>Violations that block approval even for an administrator.</summary>
+        public static readonly HashSet<string> Blocking = new() { Schedule, Authorization, Firearms, Headcount, Targets, Availability, Blackouts, Monday, Recurrence };
     }
+
+    public const string SingleRangeMessage = "You can only select multiple dates for one range per booking.";
+
+    private readonly InMemoryDataStore _store;
+    public ReservationRulesEngine(InMemoryDataStore store) => _store = store;
+
+    /// <summary>UC-09: recurring series may run through the end of the following calendar year.</summary>
+    public static DateTime RecurrenceCap(DateTime now) => new DateTime(now.Year + 1, 12, 31, 23, 59, 59);
 
     public static string Label(ShootingRange? range, DateTime start) =>
         $"{range?.Name ?? "Unknown range"} · {start.ToString(start.Year == DateTime.Today.Year ? "ddd MMM d, h:mm tt" : "ddd MMM d yyyy, h:mm tt")}";
 
-    /// <summary>Validates a single reservation (all of its future occurrences) against the proposed state.</summary>
-    public List<string> Validate(Reservation r, AppUser owner, List<Reservation> proposed, DateTime now,
-        bool tierOverride, bool isNew, ref int occurrenceCounter)
+    /// <summary>Validates one reservation (all of its occurrences) against the proposed state of the calendar.</summary>
+    public List<RuleViolation> Validate(Reservation r, CorporateGroup? group, List<Reservation> proposed, DateTime now,
+        bool tierOverride, bool checkPast, List<string>? warnings, ref int occurrenceCounter)
     {
-        var errors = new List<string>();
+        var v = new List<RuleViolation>();
         var range = _store.FindRange(r.RangeId);
         string label = Label(range, r.StartTime);
+        void Add(string check, string msg) => v.Add(new RuleViolation(check, $"{label}: {msg}"));
 
-        if (range is null) { errors.Add($"{label}: please select a valid range."); return errors; }
+        if (range is null) { Add(Checks.Schedule, "please select a valid range."); return v; }
         r.FacilityId = range.FacilityId;
+        if (r.EndTime <= r.StartTime) { Add(Checks.Schedule, "end time must be after start time."); return v; }
 
-        if (r.EndTime <= r.StartTime) { errors.Add($"{label}: end time must be after start time."); return errors; }
-
-        // ---- Recurrence shape -------------------------------------------------------------------------
-        int? totalOccurrences = null;
+        // ---- Recurrence (UC-09) -----------------------------------------------------------------------
+        var cap = RecurrenceCap(now);
         bool isRecurring = !string.IsNullOrWhiteSpace(r.EffectiveRule);
+        int? totalOccurrences = 1;
         if (isRecurring)
         {
-            try { totalOccurrences = RecurrenceExpander.CountOccurrences(r.StartTime, r.EndTime, r.EffectiveRule, r.EffectiveExceptions); }
-            catch { errors.Add($"{label}: the repeat rule could not be understood."); return errors; }
-            if (totalOccurrences is null && !tierOverride)
-                errors.Add($"{label}: recurring reservations must have an end (a number of occurrences or an end date).");
+            RecurrenceExpander.RRule rule;
+            try { rule = RecurrenceExpander.Parse(r.EffectiveRule!); }
+            catch { Add(Checks.Recurrence, "the repeat rule could not be understood."); return v; }
+            if (rule.Freq is not ("WEEKLY" or "MONTHLY"))
+                Add(Checks.Recurrence, "recurring reservations can repeat weekly or monthly only.");
+            if (rule.IsInfinite)
+                Add(Checks.Recurrence, $"recurring reservations must have an end date (no later than {cap:MMM d, yyyy}).");
+            else
+                totalOccurrences = RecurrenceExpander.CountOccurrences(r.StartTime, r.EndTime, r.EffectiveRule, r.EffectiveExceptions);
         }
 
         var occurrences = RecurrenceExpander.Expand(r.StartTime, r.EndTime, r.EffectiveRule, r.EffectiveExceptions,
-            isNew ? DateTime.MinValue : now, now + ValidationHorizon, 2000).ToList();
+            checkPast ? DateTime.MinValue : now, isRecurring ? cap.AddYears(1) : DateTime.MaxValue, 2000).ToList();
         occurrenceCounter += occurrences.Count;
+        if (occurrences.Count == 0) { Add(Checks.Schedule, "there are no upcoming dates to reserve."); return v; }
 
-        if (occurrences.Count == 0) { errors.Add($"{label}: there are no upcoming occurrences to book."); return errors; }
+        if (isRecurring)
+        {
+            var beyond = occurrences.FirstOrDefault(o => o.Start > cap);
+            if (beyond != default)
+                Add(Checks.Recurrence, $"the series runs past {cap:MMM d, yyyy}. Recurring reservations are capped at the end of the following calendar year (last requested date {occurrences[^1].Start:MMM d, yyyy}).");
+            occurrences = occurrences.Where(o => o.Start <= cap).ToList();
+            if (occurrences.Count == 0) return v;
+        }
 
-        // ---- 1. Hard blocks ---------------------------------------------------------------------------
+        // ---- 1. Schedule ------------------------------------------------------------------------------
         if (occurrences[0].Start < now)
-            errors.Add($"{Label(range, occurrences[0].Start)}: reservations cannot start in the past.");
-
-        if (r.IsAllDay && owner.Role != Roles.Admin)
-            errors.Add($"{label}: all-day reservations are reserved for facility administrators.");
-
+            v.Add(new(Checks.Schedule, $"{Label(range, occurrences[0].Start)}: reservations cannot start in the past."));
         if (!r.IsAllDay)
         {
-            foreach (var o in occurrences)
-            {
-                var open = o.Start.Date + range.OpenTime;
-                var close = o.Start.Date + range.CloseTime;
-                if (o.Start < open || o.End > close)
-                {
-                    errors.Add($"{Label(range, o.Start)}: outside operating hours ({Fmt(range.OpenTime)} - {Fmt(range.CloseTime)}).");
-                    break;
-                }
-            }
+            var outside = occurrences.FirstOrDefault(o => o.Start < o.Start.Date + range.OpenTime || o.End > o.Start.Date + range.CloseTime);
+            if (outside != default)
+                v.Add(new(Checks.Schedule, $"{Label(range, outside.Start)}: outside operating hours ({Fmt(range.OpenTime)} - {Fmt(range.CloseTime)})."));
         }
 
-        errors.AddRange(CheckConflicts(r, range, occurrences, proposed));
-        errors.AddRange(CheckBlackouts(range, occurrences));
-
-        // ---- 2. Range safety / compliance -------------------------------------------------------------
-        if (r.Participants < 1 || r.Participants > range.MaxParticipants)
-            errors.Add($"{label}: {range.Name} allows 1-{range.MaxParticipants} participants (requested {r.Participants}).");
-
-        if (string.IsNullOrWhiteSpace(r.FirearmType))
-            errors.Add($"{label}: firearm type is required.");
-        else if (!range.AllowedFirearms.Contains(r.FirearmType, StringComparer.OrdinalIgnoreCase))
-            errors.Add($"{label}: {r.FirearmType} is not permitted on {range.Name} (allowed: {string.Join(", ", range.AllowedFirearms)}).");
-
-        if (!string.IsNullOrEmpty(range.RequiredQualification))
+        // ---- UC-11 Monday rule ------------------------------------------------------------------------
+        if (_store.Settings.MondayExclusiveForTier4 && group is not null && group.Tier != CustomerTier.Tier4)
         {
-            var lastOccurrence = occurrences[^1].Start;
-            if (string.IsNullOrWhiteSpace(r.QualificationId))
-                errors.Add($"{label}: {range.Name} requires a valid '{range.RequiredQualification}' qualification ID.");
-            else
-            {
-                var q = _qualifications.Lookup(r.QualificationId);
-                if (q is null)
-                    errors.Add($"{label}: qualification '{r.QualificationId}' was not found in the qualification registry.");
-                else if (!string.Equals(q.QualificationType, range.RequiredQualification, StringComparison.OrdinalIgnoreCase))
-                    errors.Add($"{label}: qualification '{q.QualificationId}' is '{q.QualificationType}', but {range.Name} requires '{range.RequiredQualification}'.");
-                else if (q.ExpiresOn.Date < lastOccurrence.Date)
-                    errors.Add($"{label}: qualification '{q.QualificationId}' expires {q.ExpiresOn:MMM d, yyyy}, before the reservation date {lastOccurrence:MMM d, yyyy}.");
-                else if (owner.Role == Roles.Customer && !string.Equals(q.HolderName, owner.Name, StringComparison.OrdinalIgnoreCase))
-                    errors.Add($"{label}: qualification '{q.QualificationId}' belongs to a different person.");
-            }
+            var monday = occurrences.FirstOrDefault(o => OverlapsMonday(o));
+            if (monday != default)
+                v.Add(new(Checks.Monday, $"{Label(range, monday.Start)}: Mondays are reserved exclusively for Tier 4 (Law Enforcement / Military) groups."));
         }
+
+        // ---- UC-10 availability / UC-13 blackouts -----------------------------------------------------
+        v.AddRange(CheckConflicts(r, range, occurrences, proposed, warnings));
+        v.AddRange(CheckBlackouts(range, occurrences));
+
+        // ---- 2. Range rules ---------------------------------------------------------------------------
+        if (range.IsSpecialized && group is not null && !group.HasPermission(range.Id))
+            Add(Checks.Authorization, $"{group.Name} is not authorized for {range.Name} ({range.SpecializedRequirement} required). Contact the range office.");
+
+        if (r.Headcount < 1 || r.Headcount > range.MaxHeadcount)
+            Add(Checks.Headcount, $"{range.Name} allows a headcount of 1-{range.MaxHeadcount} (requested {r.Headcount}).");
+
+        if (r.FirearmTypes.Count == 0)
+            Add(Checks.Firearms, "select at least one firearm type.");
+        var notAllowed = r.FirearmTypes.Where(f => !range.AllowedFirearms.Contains(f, StringComparer.OrdinalIgnoreCase)).ToList();
+        if (notAllowed.Count > 0)
+            Add(Checks.Firearms, $"{string.Join(", ", notAllowed)} not permitted on {range.Name} (allowed: {string.Join(", ", range.AllowedFirearms)}).");
+
+        if (string.IsNullOrWhiteSpace(r.TargetType))
+            Add(Checks.Targets, "target type is required.");
+        else if (!range.AllowedTargetTypes.Contains(r.TargetType, StringComparer.OrdinalIgnoreCase))
+            Add(Checks.Targets, $"{r.TargetType} targets are not permitted on {range.Name} (allowed: {string.Join(", ", range.AllowedTargetTypes)}).");
+        if (r.TargetDistanceYards is { } dist && (dist < 1 || dist > range.MaxTargetDistanceYards))
+            Add(Checks.Targets, $"target distance must be 1-{range.MaxTargetDistanceYards} yd on {range.Name}.");
 
         // ---- 3. Tier policy ---------------------------------------------------------------------------
-        if (owner.Tier is { } tier && !tierOverride)
+        if (group is not null && !tierOverride)
         {
-            var p = _store.Policy(tier);
+            var p = _store.Policy(group.Tier);
+            var tier = TierNames.Display(group.Tier);
             var duration = (r.EndTime - r.StartTime).TotalHours;
 
-            if (range.MinimumTier > tier)
-                errors.Add($"{label}: {range.Name} is available to {range.MinimumTier} tier and above (your tier: {tier}).");
-
-            if (duration > p.MaxHoursPerBooking)
-                errors.Add($"{label}: {tier} tier bookings are limited to {p.MaxHoursPerBooking} hour(s) (requested {duration:0.#}).");
-            if (duration > range.MaxHoursPerBooking)
-                errors.Add($"{label}: {range.Name} bookings are limited to {range.MaxHoursPerBooking} hour(s).");
-
-            if (occurrences[0].Start < now.AddHours(p.MinLeadHours))
-                errors.Add($"{label}: {tier} tier must book at least {p.MinLeadHours} hour(s) ahead.");
-
-            var lastAllowed = now.Date.AddDays(p.AdvanceBookingDays + 1);
-            var tooFar = occurrences.FirstOrDefault(o => o.Start >= lastAllowed);
-            if (tooFar != default)
-                errors.Add($"{Label(range, tooFar.Start)}: {tier} tier can book up to {p.AdvanceBookingDays} days in advance (until {lastAllowed.AddDays(-1):MMM d, yyyy}).");
-
-            if (isRecurring)
+            if (range.MinimumTier > group.Tier)
+                Add(Checks.Authorization, $"{range.Name} is restricted to {TierNames.Display(range.MinimumTier)} groups.");
+            if (duration > Math.Min(p.MaxHoursPerBooking, range.MaxHoursPerBooking))
+                Add(Checks.TierPolicy, $"bookings are limited to {Math.Min(p.MaxHoursPerBooking, range.MaxHoursPerBooking)} hour(s) ({tier} / {range.Name}).");
+            if (checkPast && occurrences[0].Start < now.AddHours(p.MinLeadHours))
+                Add(Checks.TierPolicy, $"{tier} groups must book at least {p.MinLeadHours} hour(s) in advance.");
+            if (isRecurring && !p.AllowRecurring)
+                Add(Checks.TierPolicy, $"recurring reservations are not available for {tier} groups.");
+            if (!isRecurring)
             {
-                if (!p.AllowRecurring)
-                    errors.Add($"{label}: recurring reservations are not available for {tier} tier.");
-                else if (totalOccurrences > p.MaxRecurringOccurrences)
-                    errors.Add($"{label}: {tier} tier recurring bookings are capped at {p.MaxRecurringOccurrences} occurrences (requested {totalOccurrences}).");
+                var lastAllowed = now.Date.AddDays(p.AdvanceBookingDays + 1);
+                if (occurrences[0].Start >= lastAllowed)
+                    Add(Checks.TierPolicy, $"{tier} groups can book up to {p.AdvanceBookingDays} days ahead (until {lastAllowed.AddDays(-1):MMM d, yyyy}).");
             }
         }
 
-        return errors;
+        return v;
     }
 
-    /// <summary>Per-customer caps evaluated over the whole proposed state (per day, active future, monthly hours).</summary>
-    public List<string> ValidateAggregates(AppUser owner, List<Reservation> proposed, DateTime now)
+    private static bool OverlapsMonday(Occurrence o)
     {
-        var errors = new List<string>();
-        if (owner.Tier is not { } tier) return errors;
-        var p = _store.Policy(tier);
-
-        var occ = proposed.Where(x => x.CustomerId == owner.Id)
-            .SelectMany(x => RecurrenceExpander.Expand(x.StartTime, x.EndTime, x.EffectiveRule, x.EffectiveExceptions,
-                now, now + ValidationHorizon, 2000))
-            .ToList();
-
-        if (occ.Count > p.MaxActiveFutureBookings)
-            errors.Add($"{tier} tier may hold at most {p.MaxActiveFutureBookings} upcoming bookings (this request would make {occ.Count}).");
-
-        var busyDay = occ.GroupBy(o => o.Start.Date).FirstOrDefault(g => g.Count() > p.MaxBookingsPerDay);
-        if (busyDay is not null)
-            errors.Add($"{tier} tier may book {p.MaxBookingsPerDay} session(s) per day ({busyDay.Key:ddd MMM d} would have {busyDay.Count()}).");
-
-        var busyMonth = occ.GroupBy(o => new { o.Start.Year, o.Start.Month })
-            .Select(g => new { g.Key, Hours = g.Sum(o => (o.End - o.Start).TotalHours) })
-            .FirstOrDefault(g => g.Hours > p.MaxHoursPerMonth);
-        if (busyMonth is not null)
-            errors.Add($"{tier} tier is capped at {p.MaxHoursPerMonth} range hours per month ({new DateTime(busyMonth.Key.Year, busyMonth.Key.Month, 1):MMMM yyyy} would have {busyMonth.Hours:0.#}).");
-
-        return errors;
+        for (var d = o.Start.Date; d < o.End; d = d.AddDays(1))
+            if (d.DayOfWeek == DayOfWeek.Monday && o.End > d && o.Start < d.AddDays(1)) return true;
+        return false;
     }
 
-    private IEnumerable<string> CheckConflicts(Reservation r, ShootingRange range, List<Occurrence> occurrences, List<Reservation> proposed)
+    private IEnumerable<RuleViolation> CheckConflicts(Reservation r, ShootingRange range, List<Occurrence> occurrences,
+        List<Reservation> proposed, List<string>? warnings)
     {
         var from = occurrences[0].Start;
         var to = occurrences[^1].End;
         int reported = 0;
-        foreach (var other in proposed.Where(o => o.RangeId == r.RangeId && o.Id != r.Id))
+        foreach (var other in proposed.Where(o => o.IsActive && o.RangeId == r.RangeId && o.Id != r.Id))
         {
+            bool sameGroup = r.GroupId is not null && other.GroupId == r.GroupId;
             foreach (var oo in RecurrenceExpander.Expand(other.StartTime, other.EndTime, other.EffectiveRule, other.EffectiveExceptions, from, to))
             {
                 var hit = occurrences.FirstOrDefault(o => o.Start < oo.End && o.End > oo.Start);
-                if (hit != default)
+                if (hit == default) continue;
+                if (sameGroup && _store.Settings.AllowSameGroupOverlap)
                 {
-                    yield return $"{Label(range, hit.Start)}: conflicts with an existing reservation ({oo.Start:h:mm tt} - {oo.End:h:mm tt}).";
-                    if (++reported >= 3) yield break;
+                    warnings?.Add($"{Label(range, hit.Start)}: overlaps another reservation of your own group (allowed).");
                     break;
                 }
+                yield return new RuleViolation(Checks.Availability,
+                    $"{Label(range, hit.Start)}: this slot is already reserved by another organization ({oo.Start:h:mm tt} - {oo.End:h:mm tt}).");
+                if (++reported >= 3) yield break;
+                break;
             }
         }
     }
 
-    private IEnumerable<string> CheckBlackouts(ShootingRange range, List<Occurrence> occurrences)
+    private IEnumerable<RuleViolation> CheckBlackouts(ShootingRange range, List<Occurrence> occurrences)
     {
         var from = occurrences[0].Start;
         var to = occurrences[^1].End;
@@ -201,12 +200,10 @@ public class ReservationRulesEngine
             foreach (var bo in RecurrenceExpander.Expand(b.StartTime, b.EndTime, b.RecurrenceRule, b.RecurrenceException, from, to))
             {
                 var hit = occurrences.FirstOrDefault(o => o.Start < bo.End && o.End > bo.Start);
-                if (hit != default)
-                {
-                    yield return $"{Label(range, hit.Start)}: blocked by blackout '{b.Title}'.";
-                    if (++reported >= 3) yield break;
-                    break;
-                }
+                if (hit == default) continue;
+                yield return new RuleViolation(Checks.Blackouts, $"{Label(range, hit.Start)}: blocked by blackout '{b.Title}'.");
+                if (++reported >= 3) yield break;
+                break;
             }
         }
     }

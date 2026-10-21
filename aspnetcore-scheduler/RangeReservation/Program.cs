@@ -23,6 +23,14 @@ builder.Services
         o.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
     });
 
+// ---------------------------------------------------------------------------
+// Sub-path hosting, e.g. https://<app>.azurewebsites.net/range-reservation/
+// Set "PathBase" in appsettings.json or as an App Service application setting (PathBase=/range-reservation).
+// Every URL the app produces (~/..., asp-action, redirects, cookie path, JS API calls) is then prefixed with it.
+// ---------------------------------------------------------------------------
+var pathBase = (builder.Configuration["PathBase"] ?? "").Trim().TrimEnd('/');
+if (pathBase.Length > 0 && !pathBase.StartsWith('/')) pathBase = "/" + pathBase;
+
 // Local cookie authentication with Admin / Customer roles (swap for AD / ADFS / on-prem IdP in production).
 builder.Services
     .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
@@ -34,20 +42,15 @@ builder.Services
     });
 builder.Services.AddAuthorization();
 
+
 // Application services (in-memory store for the POC - replace with EF Core / existing backend APIs).
 builder.Services.AddSingleton<FacilityClock>();
 builder.Services.AddSingleton<InMemoryDataStore>();
-builder.Services.AddSingleton<IQualificationRegistry, MockQualificationRegistry>();
+builder.Services.AddSingleton<NotificationService>();
 builder.Services.AddSingleton<ReservationRulesEngine>();
 builder.Services.AddSingleton<ReservationService>();
 
-// ---------------------------------------------------------------------------
-// Sub-path hosting, e.g. https://<app>.azurewebsites.net/range-reservation/
-// Set "PathBase" in appsettings.json or as an App Service application setting (PathBase=/range-reservation).
-// Every URL the app produces (~/..., asp-action, redirects, cookie path, JS API calls) is then prefixed with it.
-// ---------------------------------------------------------------------------
-var pathBase = (builder.Configuration["PathBase"] ?? "").Trim().TrimEnd('/');
-if (pathBase.Length > 0 && !pathBase.StartsWith('/')) pathBase = "/" + pathBase;
+
 if (pathBase.Length > 0)
 {
     // Scope the auth cookie to the sub-path so other apps on the same host don't receive it.
