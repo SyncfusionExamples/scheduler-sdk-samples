@@ -1,3 +1,4 @@
+using System.Text;
 using RangeReservationPoc.Models;
 
 namespace RangeReservationPoc.Services;
@@ -15,12 +16,28 @@ namespace RangeReservationPoc.Services;
 public class OnboardingService
 {
     private readonly InMemoryDataStore _store;
-    private readonly NotificationService _notifications;
+    private readonly ILogger<OnboardingService> _log;
 
-    public OnboardingService(InMemoryDataStore store, NotificationService notifications)
+    public OnboardingService(InMemoryDataStore store, ILogger<OnboardingService> log)
     {
         _store = store;
-        _notifications = notifications;
+        _log = log;
+    }
+    
+    private void LogNotification(string to, string subject, string body)
+    {
+        lock (_store.Sync)
+        {
+            _store.Notifications.Insert(0, new NotificationRecord
+            {
+                Id = _store.NextNotificationId(),
+                SentAt = DateTime.Now,
+                To = to,
+                Subject = subject,
+                Body = body,
+                DeliveredVia = "in-memory log (onboarding)"
+            });
+        }
     }
 
     // ==================== UC-01: Apply for Corporate Account ====================
@@ -67,24 +84,21 @@ public class OnboardingService
         _store.AddApplication(app);
 
         // Send confirmation email to prospective user
-        _notifications.SendNotification(
-            toEmail: app.PrimaryContactEmail,
-            toName: app.PrimaryContactName,
-            subject: $"Application Received: {app.CompanyName}",
-            body: $"""
-                Dear {app.PrimaryContactName},
-                
-                Thank you for submitting your corporate account application for {app.CompanyName}.
-                
-                Application ID: {app.Id}
-                Status: Pending Review
-                
-                An AZGFD Administrator will review your application and contact you within 3-5 business days.
-                
-                Best regards,
-                Arizona Game & Fish Department
-                """
-        );
+        var confirmBody = $"""
+            Dear {app.PrimaryContactName},
+            
+            Thank you for submitting your corporate account application for {app.CompanyName}.
+            
+            Application ID: {app.Id}
+            Status: Pending Review
+            
+            An AZGFD Administrator will review your application and contact you within 3-5 business days.
+            
+            Best regards,
+            Arizona Game & Fish Department
+            """;
+        
+        LogNotification(app.PrimaryContactEmail, $"Application Received: {app.CompanyName}", confirmBody);
 
         return (true, app, new());
     }
@@ -142,36 +156,37 @@ public class OnboardingService
                 Status = AccountStatus.PreApproved
             };
 
-            _store.AddGroup(group);
+            lock (_store.Sync)
+            {
+                group.Id = _store.Groups.Count > 0 ? _store.Groups.Max(g => g.Id) + 1 : 1;
+                _store.Groups.Add(group);
+            }
             app.UpdatedAt = DateTime.UtcNow;
 
             // Send approval notification
-            _notifications.SendNotification(
-                toEmail: app.PrimaryContactEmail,
-                toName: app.PrimaryContactName,
-                subject: $"Application Approved: {app.CompanyName}",
-                body: $"""
-                    Dear {app.PrimaryContactName},
-                    
-                    Congratulations! Your corporate account application has been approved by AZGFD.
-                    
-                    Company: {app.CompanyName}
-                    Tier: {TierNames.Display(tier)}
-                    Status: Pre-Approved - Awaiting Compliance Documentation
-                    
-                    Next Steps:
-                    You must now upload the following compliance documents to complete your onboarding:
-                    1. Certificate of Insurance (COI) - Occurrence policy, minimum 1M/2M coverage
-                    2. Signed User Group Agreement/Waiver
-                    
-                    Once verified by AZGFD, your account will be activated for range bookings.
-                    
-                    Please log in to your portal and upload these documents.
-                    
-                    Best regards,
-                    Arizona Game & Fish Department
-                    """
-            );
+            var approvalBody = $"""
+                Dear {app.PrimaryContactName},
+                
+                Congratulations! Your corporate account application has been approved by AZGFD.
+                
+                Company: {app.CompanyName}
+                Tier: {TierNames.Display(tier)}
+                Status: Pre-Approved - Awaiting Compliance Documentation
+                
+                Next Steps:
+                You must now upload the following compliance documents to complete your onboarding:
+                1. Certificate of Insurance (COI) - Occurrence policy, minimum 1M/2M coverage
+                2. Signed User Group Agreement/Waiver
+                
+                Once verified by AZGFD, your account will be activated for range bookings.
+                
+                Please log in to your portal and upload these documents.
+                
+                Best regards,
+                Arizona Game & Fish Department
+                """;
+            
+            LogNotification(app.PrimaryContactEmail, $"Application Approved: {app.CompanyName}", approvalBody);
         }
         else
         {
@@ -180,26 +195,31 @@ public class OnboardingService
             app.UpdatedAt = DateTime.UtcNow;
 
             // Send denial notification
-            _notifications.SendNotification(
-                toEmail: app.PrimaryContactEmail,
-                toName: app.PrimaryContactName,
-                subject: $"Application Denied: {app.CompanyName}",
-                body: $"""
-                    Dear {app.PrimaryContactName},
-                    
-                    We regret to inform you that your corporate account application has been denied.
-                    
-                    Reason: {app.DenialReason}
-                    
-                    If you have questions, please contact the Arizona Game & Fish Department.
-                    
-                    Best regards,
-                    Arizona Game & Fish Department
-                    """
-            );
+            var denialBody = $"""
+                Dear {app.PrimaryContactName},
+                
+                We regret to inform you that your corporate account application has been denied.
+                
+                Reason: {app.DenialReason}
+                
+                If you have questions, please contact the Arizona Game & Fish Department.
+                
+                Best regards,
+                Arizona Game & Fish Department
+                """;
+            
+            LogNotification(app.PrimaryContactEmail, $"Application Denied: {app.CompanyName}", denialBody);
         }
 
-        _store.UpdateApplication(app);
+        lock (_store.Sync)
+        {
+            var existing = _store.OnboardingApplications.FirstOrDefault(a => a.Id == app.Id);
+            if (existing != null)
+            {
+                _store.OnboardingApplications.Remove(existing);
+                _store.OnboardingApplications.Add(app);
+            }
+        }
         return (true, new());
     }
 
@@ -215,7 +235,7 @@ public class OnboardingService
     {
         var errors = new List<string>();
 
-        var group = _store.GetGroup(input.GroupId);
+        var group = _store.Groups.FirstOrDefault(g => g.Id == input.GroupId);
         if (group is null)
         {
             errors.Add("Corporate group not found.");
@@ -255,25 +275,26 @@ public class OnboardingService
             UploadedAt = DateTime.UtcNow
         };
 
-        _store.AddComplianceDocument(doc);
+        lock (_store.Sync)
+        {
+            doc.Id = (_store.ComplianceDocuments.Count > 0 ? _store.ComplianceDocuments.Max(d => d.Id) : 0) + 1;
+            _store.ComplianceDocuments.Add(doc);
+        }
 
         // Notify admin that a document is waiting for review
-        _notifications.SendNotification(
-            toEmail: "admin@azgfd.example.com",  // Would be configured admin email
-            toName: "AZGFD Administrator",
-            subject: $"New Compliance Document for Review: {group.Name}",
-            body: $"""
-                A new compliance document has been uploaded and is awaiting verification.
-                
-                Company: {group.Name}
-                Document Type: {doc.DocumentType}
-                File Name: {doc.FileName}
-                Uploaded By: {uploader.Name}
-                Uploaded At: {doc.UploadedAt:F}
-                
-                Please review and verify the document in the admin dashboard.
-                """
-        );
+        var adminBody = $"""
+            A new compliance document has been uploaded and is awaiting verification.
+            
+            Company: {group.Name}
+            Document Type: {doc.DocumentType}
+            File Name: {doc.FileName}
+            Uploaded By: {uploader.Name}
+            Uploaded At: {doc.UploadedAt:F}
+            
+            Please review and verify the document in the admin dashboard.
+            """;
+        
+        LogNotification("admin@azgfd.example.com", $"New Compliance Document for Review: {group.Name}", adminBody);
 
         return (true, doc, new());
     }
@@ -291,7 +312,7 @@ public class OnboardingService
     {
         var errors = new List<string>();
 
-        var doc = _store.GetComplianceDocument(input.DocumentId);
+        var doc = _store.ComplianceDocuments.FirstOrDefault(d => d.Id == input.DocumentId);
         if (doc is null)
         {
             errors.Add("Document not found.");
@@ -304,7 +325,7 @@ public class OnboardingService
             return (false, errors);
         }
 
-        var group = _store.GetGroup(doc.GroupId);
+        var group = _store.Groups.FirstOrDefault(g => g.Id == doc.GroupId);
         if (group is null)
         {
             errors.Add("Associated group not found.");
@@ -351,10 +372,18 @@ public class OnboardingService
             doc.CertificateHolder = input.CertificateHolder;
             doc.ReviewNotes = input.ReviewNotes;
 
-            _store.UpdateComplianceDocument(doc);
+            lock (_store.Sync)
+            {
+                var existing = _store.ComplianceDocuments.FirstOrDefault(d => d.Id == doc.Id);
+                if (existing != null)
+                {
+                    _store.ComplianceDocuments.Remove(existing);
+                    _store.ComplianceDocuments.Add(doc);
+                }
+            }
 
             // Check if all required compliance docs are now verified
-            var allDocs = _store.GetComplianceDocuments(doc.GroupId);
+            var allDocs = _store.ComplianceDocuments.Where(d => d.GroupId == doc.GroupId).ToList();
             var requiredDocs = new[]
             {
                 ComplianceDocumentType.CertificateOfInsurance,
@@ -370,27 +399,32 @@ public class OnboardingService
                 // Activate the account
                 group.Status = AccountStatus.Active;
                 group.LastComplianceVerifiedAt = DateTime.UtcNow;
-                _store.UpdateGroup(group);
+                lock (_store.Sync)
+                {
+                    var existingGroup = _store.Groups.FirstOrDefault(g => g.Id == group.Id);
+                    if (existingGroup != null)
+                    {
+                        _store.Groups.Remove(existingGroup);
+                        _store.Groups.Add(group);
+                    }
+                }
 
                 // Notify the corporate user that their account is now active
-                _notifications.SendNotification(
-                    toEmail: group.ContactEmail,
-                    toName: "Corporate Account",
-                    subject: $"Account Activated: {group.Name}",
-                    body: $"""
-                        Your corporate account has been fully activated!
-                        
-                        Company: {group.Name}
-                        Status: Active
-                        Booking Enabled: Yes
-                        
-                        You can now start booking range slots through the portal.
-                        Your compliance documents are valid through {doc.ExpirationDate:yyyy-MM-dd}.
-                        
-                        Best regards,
-                        Arizona Game & Fish Department
-                        """
-                );
+                var activationBody = $"""
+                    Your corporate account has been fully activated!
+                    
+                    Company: {group.Name}
+                    Status: Active
+                    Booking Enabled: Yes
+                    
+                    You can now start booking range slots through the portal.
+                    Your compliance documents are valid through {doc.ExpirationDate:yyyy-MM-dd}.
+                    
+                    Best regards,
+                    Arizona Game & Fish Department
+                    """;
+                
+                LogNotification(group.ContactEmail, $"Account Activated: {group.Name}", activationBody);
             }
         }
         else
@@ -400,25 +434,31 @@ public class OnboardingService
             doc.VerifiedBy = admin.Name;
             doc.VerifiedAt = DateTime.UtcNow;
             doc.ReviewNotes = input.ReviewNotes;
-            _store.UpdateComplianceDocument(doc);
+            
+            lock (_store.Sync)
+            {
+                var existing = _store.ComplianceDocuments.FirstOrDefault(d => d.Id == doc.Id);
+                if (existing != null)
+                {
+                    _store.ComplianceDocuments.Remove(existing);
+                    _store.ComplianceDocuments.Add(doc);
+                }
+            }
 
             // Notify the corporate user to re-upload
-            _notifications.SendNotification(
-                toEmail: group.ContactEmail,
-                toName: "Corporate Account",
-                subject: $"Compliance Document Rejected: {group.Name}",
-                body: $"""
-                    Your submitted compliance document has been rejected and requires resubmission.
-                    
-                    Document: {doc.FileName}
-                    Reason: {input.ReviewNotes}
-                    
-                    Please upload a corrected version through your portal.
-                    
-                    Best regards,
-                    Arizona Game & Fish Department
-                    """
-            );
+            var rejectionBody = $"""
+                Your submitted compliance document has been rejected and requires resubmission.
+                
+                Document: {doc.FileName}
+                Reason: {input.ReviewNotes}
+                
+                Please upload a corrected version through your portal.
+                
+                Best regards,
+                Arizona Game & Fish Department
+                """;
+            
+            LogNotification(group.ContactEmail, $"Compliance Document Rejected: {group.Name}", rejectionBody);
         }
 
         return (true, new());
@@ -437,8 +477,13 @@ public class OnboardingService
         int blocksCount = 0;
         var now = DateTime.UtcNow;
 
-        var allGroups = _store.GetAllGroups();
-        var allDocs = _store.GetAllComplianceDocuments();
+        List<CorporateGroup> allGroups;
+        List<ComplianceDocument> allDocs;
+        lock (_store.Sync)
+        {
+            allGroups = new List<CorporateGroup>(_store.Groups);
+            allDocs = new List<ComplianceDocument>(_store.ComplianceDocuments);
+        }
 
         foreach (var group in allGroups)
         {
@@ -455,43 +500,54 @@ public class OnboardingService
                 var daysUntilExpiration = (doc.ExpirationDate.Value - now).TotalDays;
 
                 // Check if expiration event already handled (to avoid duplicate notifications)
-                var eventExists = _store.GetComplianceExpirationEvent(group.Id, doc.Id, "Expired");
+                var eventExists = _store.ExpirationEvents.FirstOrDefault(e =>
+                    e.GroupId == group.Id && e.DocumentId == doc.Id && e.EventType == "Expired");
 
-                if (daysUntilExpiration < 0 && !eventExists)
+                if (daysUntilExpiration < 0 && eventExists == null)
                 {
                     // EXPIRED: Block booking access
                     group.Status = AccountStatus.Suspended;
-                    _store.UpdateGroup(group);
-
-                    _store.AddComplianceExpirationEvent(new ComplianceExpirationEvent
+                    lock (_store.Sync)
                     {
-                        GroupId = group.Id,
-                        DocumentId = doc.Id,
-                        EventType = "Expired",
-                        DocumentExpirationDate = doc.ExpirationDate.Value,
-                        EventTriggeredAt = now,
-                        NotificationSent = false
-                    });
+                        var existingGroup = _store.Groups.FirstOrDefault(g => g.Id == group.Id);
+                        if (existingGroup != null)
+                        {
+                            _store.Groups.Remove(existingGroup);
+                            _store.Groups.Add(group);
+                        }
+                    }
 
-                    _notifications.SendNotification(
-                        toEmail: group.ContactEmail,
-                        toName: "Corporate Account",
-                        subject: $"URGENT: Booking Blocked - Compliance Expired: {group.Name}",
-                        body: $"""
-                            YOUR BOOKING ACCESS HAS BEEN BLOCKED
-                            
-                            Company: {group.Name}
-                            Reason: {doc.DocumentType} expired on {doc.ExpirationDate:yyyy-MM-dd}
-                            
-                            IMMEDIATE ACTION REQUIRED:
-                            To restore booking privileges, please upload a renewed {doc.DocumentType} document.
-                            
-                            Status: Booking Disabled
-                            
-                            Best regards,
-                            Arizona Game & Fish Department
-                            """
-                    );
+                    lock (_store.Sync)
+                    {
+                        var evt = new ComplianceExpirationEvent
+                        {
+                            Id = (_store.ExpirationEvents.Count > 0 ? _store.ExpirationEvents.Max(e => e.Id) : 0) + 1,
+                            GroupId = group.Id,
+                            DocumentId = doc.Id,
+                            EventType = "Expired",
+                            DocumentExpirationDate = doc.ExpirationDate.Value,
+                            EventTriggeredAt = now,
+                            NotificationSent = false
+                        };
+                        _store.ExpirationEvents.Add(evt);
+                    }
+
+                    var expiredBody = $"""
+                        YOUR BOOKING ACCESS HAS BEEN BLOCKED
+                        
+                        Company: {group.Name}
+                        Reason: {doc.DocumentType} expired on {doc.ExpirationDate:yyyy-MM-dd}
+                        
+                        IMMEDIATE ACTION REQUIRED:
+                        To restore booking privileges, please upload a renewed {doc.DocumentType} document.
+                        
+                        Status: Booking Disabled
+                        
+                        Best regards,
+                        Arizona Game & Fish Department
+                        """;
+                    
+                    LogNotification(group.ContactEmail, $"URGENT: Booking Blocked - Compliance Expired: {group.Name}", expiredBody);
 
                     blocksCount++;
                 }
@@ -505,36 +561,39 @@ public class OnboardingService
                         if (Math.Abs(daysUntilExpiration - threshold) < 1.0)  // Within 1 day of threshold
                         {
                             var eventKey = $"Reminder-{threshold}";
-                            var eventExists2 = _store.GetComplianceExpirationEvent(group.Id, doc.Id, eventKey);
+                            var reminderEvent = _store.ExpirationEvents.FirstOrDefault(e =>
+                                e.GroupId == group.Id && e.DocumentId == doc.Id && e.EventType == eventKey);
 
-                            if (!eventExists2)
+                            if (reminderEvent == null)
                             {
-                                _store.AddComplianceExpirationEvent(new ComplianceExpirationEvent
+                                lock (_store.Sync)
                                 {
-                                    GroupId = group.Id,
-                                    DocumentId = doc.Id,
-                                    EventType = eventKey,
-                                    DocumentExpirationDate = doc.ExpirationDate.Value,
-                                    EventTriggeredAt = now,
-                                    NotificationSent = false
-                                });
+                                    var evt = new ComplianceExpirationEvent
+                                    {
+                                        Id = (_store.ExpirationEvents.Count > 0 ? _store.ExpirationEvents.Max(e => e.Id) : 0) + 1,
+                                        GroupId = group.Id,
+                                        DocumentId = doc.Id,
+                                        EventType = eventKey,
+                                        DocumentExpirationDate = doc.ExpirationDate.Value,
+                                        EventTriggeredAt = now,
+                                        NotificationSent = false
+                                    };
+                                    _store.ExpirationEvents.Add(evt);
+                                }
 
-                                _notifications.SendNotification(
-                                    toEmail: group.ContactEmail,
-                                    toName: "Corporate Account",
-                                    subject: $"Compliance Reminder ({threshold} days): {group.Name}",
-                                    body: $"""
-                                        Your {doc.DocumentType} will expire in {threshold} days.
-                                        
-                                        Expiration Date: {doc.ExpirationDate:yyyy-MM-dd}
-                                        Current Date: {now:yyyy-MM-dd}
-                                        
-                                        To avoid booking interruption, please prepare and upload a renewed document.
-                                        
-                                        Best regards,
-                                        Arizona Game & Fish Department
-                                        """
-                                );
+                                var reminderBody = $"""
+                                    Your {doc.DocumentType} will expire in {threshold} days.
+                                    
+                                    Expiration Date: {doc.ExpirationDate:yyyy-MM-dd}
+                                    Current Date: {now:yyyy-MM-dd}
+                                    
+                                    To avoid booking interruption, please prepare and upload a renewed document.
+                                    
+                                    Best regards,
+                                    Arizona Game & Fish Department
+                                    """;
+                                
+                                LogNotification(group.ContactEmail, $"Compliance Reminder ({threshold} days): {group.Name}", reminderBody);
 
                                 remindersCount++;
                             }
@@ -550,8 +609,11 @@ public class OnboardingService
     // ==================== Helpers ====================
 
     /// <summary>Validate that coverage meets 1M/2M minimum.</summary>
-    private bool ValidateCoverageLimits(string coverage)
+    private bool ValidateCoverageLimits(string? coverage)
     {
+        if (string.IsNullOrWhiteSpace(coverage))
+            return false;
+        
         // Simplified: check if coverage string contains "1M" or "1,000,000" or similar patterns
         // In production, parse the COI document metadata more rigorously
         return coverage.Contains("1M", StringComparison.OrdinalIgnoreCase)
@@ -562,11 +624,11 @@ public class OnboardingService
     /// <summary>Get onboarding status for a corporate group's dashboard.</summary>
     public CorporateGroupOnboardingDto GetGroupOnboardingStatus(int groupId)
     {
-        var group = _store.GetGroup(groupId);
+        var group = _store.Groups.FirstOrDefault(g => g.Id == groupId);
         if (group is null)
             return new();
 
-        var docs = _store.GetComplianceDocuments(groupId);
+        var docs = _store.ComplianceDocuments.Where(d => d.GroupId == groupId).ToList();
         var now = DateTime.UtcNow;
 
         var complianceSummary = "";
@@ -629,8 +691,8 @@ public class OnboardingService
     {
         return doc.Status switch
         {
-            DocumentStatus.Verified when doc.ExpirationDate <= now => "Expired",
-            DocumentStatus.Verified when (doc.ExpirationDate - now).TotalDays <= 7 => "Expiring Soon",
+            DocumentStatus.Verified when doc.ExpirationDate.HasValue && doc.ExpirationDate.Value <= now => "Expired",
+            DocumentStatus.Verified when doc.ExpirationDate.HasValue && (doc.ExpirationDate.Value - now).TotalDays <= 7 => "Expiring Soon",
             DocumentStatus.Verified => "Verified",
             DocumentStatus.PendingReview => "Pending Review",
             DocumentStatus.Rejected => "Rejected",
