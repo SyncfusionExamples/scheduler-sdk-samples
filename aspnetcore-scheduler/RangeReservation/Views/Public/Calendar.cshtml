@@ -1,0 +1,102 @@
+@{
+    ViewData["Title"] = "Public availability";
+    var now = (DateTime)ViewBag.Now;
+    var facilities = ((List<Facility>)ViewBag.Facilities).Select(f => new { id = f.Id, text = f.Name, color = f.Color }).ToList();
+    var ranges = ((List<ShootingRange>)ViewBag.Ranges).Select(r => new { id = r.Id, text = r.Name, groupId = r.FacilityId, color = r.Color }).ToList();
+}
+<div class="page-head">
+    <h2>Range availability</h2>
+    <p class="muted small">Public, read-only calendar. Blackouts (maintenance, holidays, events) and reserved time are shown without any customer details.</p>
+</div>
+<section class="main-panel">
+    <div class="toolbar-row">
+        <span class="muted small">Add closures to Outlook / Google / Apple Calendar:</span>
+        <button id="exportBlackouts" class="e-btn e-small e-primary">Export blackouts (.ics)</button>
+        <button id="exportAll" class="e-btn e-small e-outline">Export blackouts + reserved time (.ics)</button>
+    </div>
+    @* Read-only Syncfusion Scheduler (external calendar for UC-13) *@
+    <ejs-schedule id="publicSchedule" width="100%" height="760px" readonly="true"
+                  selectedDate="@now.Date" currentView="TimelineWeek"
+                  startHour="06:00" endHour="21:00" showTimeIndicator="false"
+                  created="onPublicCreated" eventRendered="onPublicEventRendered">
+        <e-schedule-group byGroupID="true" resources="@(new[] { "Facilities", "Ranges" })"></e-schedule-group>
+        <e-schedule-resources>
+            <e-schedule-resource dataSource="@facilities" field="FacilityId" title="Facility" name="Facilities"
+                                 textField="text" idField="id" colorField="color"></e-schedule-resource>
+            <e-schedule-resource dataSource="@ranges" field="RangeId" title="Range" name="Ranges"
+                                 textField="text" idField="id" groupIDField="groupId" colorField="color"></e-schedule-resource>
+        </e-schedule-resources>
+        <e-schedule-timescale enable="true" interval="60" slotCount="1"></e-schedule-timescale>
+        <e-schedule-eventsettings dataSource="@(new List<object>())" enableTooltip="true"></e-schedule-eventsettings>
+        <e-schedule-views>
+            <e-schedule-view option="TimelineDay"></e-schedule-view>
+            <e-schedule-view option="TimelineWeek"></e-schedule-view>
+            <e-schedule-view option="Month"></e-schedule-view>
+            <e-schedule-view option="Agenda"></e-schedule-view>
+        </e-schedule-views>
+    </ejs-schedule>
+</section>
+
+@section Scripts {
+    <script>
+        // The Scheduler's iCalendar export is an optional module - inject it before the tag helper creates the control.
+        ej.schedule.Schedule.Inject(ej.schedule.ICalendarExport);
+        const rangeNames = @Html.Raw(Json.Serialize(ranges.ToDictionary(r => r.id.ToString(), r => r.text)));
+
+        // Same wall-clock conventions as the booking calendar (see scheduler.js).
+        const pad = n => String(n).padStart(2, '0');
+        const fromWall = s => { const m = /(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/.exec(s); return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)); };
+        const recWallToUtc = str => {
+            const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z?$/i.exec((str || '').trim()); if (!m) return str;
+            const d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+            return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}Z`;
+        };
+        async function onPublicCreated() {
+            const s = document.getElementById('publicSchedule').ej2_instances[0];
+            const res = await fetch(appUrl('/api/public/events'));
+            const data = (await res.json()).map(e => Object.assign({}, e, {
+                StartTime: fromWall(e.StartTime), EndTime: fromWall(e.EndTime),
+                RecurrenceRule: e.RecurrenceRule ? e.RecurrenceRule.replace(/UNTIL=([^;]+)/i, (_, v) => 'UNTIL=' + recWallToUtc(v)) : e.RecurrenceRule,
+                RecurrenceException: e.RecurrenceException ? e.RecurrenceException.split(',').map(recWallToUtc).join(',') : e.RecurrenceException
+            }));
+            s.eventSettings.dataSource = data;
+            publicEvents = data;
+        }
+        let publicEvents = [];
+
+        // Built-in Scheduler iCalendar export (exportToICalendar). Notes:
+        //  - Without customData it exports only regular events; blackouts are block events, so they are passed explicitly.
+        //  - Only standard fields are passed (any extra field would be written as a non-standard iCalendar line);
+        //    the range name goes into LOCATION.
+        //  - Repeating events are stamped with the Scheduler's timezone, so it is set to the facility time zone just for the
+        //    export (muted - no re-render). One-time events are written as local "floating" times.
+        function exportIcs(includeReserved) {
+            const s = document.getElementById('publicSchedule').ej2_instances[0];
+            const items = publicEvents
+                .filter(e => e.Kind === 'blackout' || (includeReserved && e.Kind === 'masked'))
+                .filter(e => e.Kind !== 'blackout' || e.FacilityId && isFirstRangeOfBlackout(e))
+                .map(e => ({
+                    Id: e.Id, Subject: e.Subject, StartTime: e.StartTime, EndTime: e.EndTime, IsAllDay: e.IsAllDay,
+                    RecurrenceRule: e.RecurrenceRule || null, RecurrenceException: e.RecurrenceException || null,
+                    RecurrenceID: e.RecurrenceID || null, Location: blackoutScope(e), Description: e.Description || ''
+                }));
+            const previous = s.timezone;
+            s.setProperties({ timezone: 'America/Phoenix' }, true);
+            try { s.exportToICalendar(includeReserved ? 'range-availability' : 'range-blackouts', items); }
+            finally { s.setProperties({ timezone: previous }, true); }
+        }
+        // A facility-wide blackout is shown once per range on the calendar; export it once, naming every range it covers.
+        const blackoutKey = e => Math.floor(e.Id / 100);
+        function isFirstRangeOfBlackout(e) { return publicEvents.find(x => x.Kind === 'blackout' && blackoutKey(x) === blackoutKey(e)) === e; }
+        function blackoutScope(e) {
+            if (e.Kind !== 'blackout') return rangeNames[e.RangeId] || '';
+            return publicEvents.filter(x => x.Kind === 'blackout' && blackoutKey(x) === blackoutKey(e)).map(x => rangeNames[x.RangeId]).join('\\, ');
+        }
+        document.getElementById('exportBlackouts').onclick = () => exportIcs(false);
+        document.getElementById('exportAll').onclick = () => exportIcs(true);
+        function onPublicEventRendered(args) {
+            if (args.data.Kind === 'blackout') args.element.classList.add('ev-blackout');
+            if (args.data.Kind === 'masked') args.element.classList.add('ev-masked');
+        }
+    </script>
+}

@@ -1,0 +1,77 @@
+@model List<CorporateGroup>
+@{
+    ViewData["Title"] = "Groups & permissions";
+    var ranges = (List<ShootingRange>)ViewBag.Ranges;
+    var users = (List<AppUser>)ViewBag.Users;
+    var specialized = ranges.Where(r => r.IsSpecialized).ToList();
+}
+<div class="page-head">
+    <h2>Corporate groups &amp; specialized range permissions</h2>
+    <p class="muted small">Specialized ranges (@string.Join(", ", specialized.Select(r => r.Name))) are hidden from a group until an administrator
+        grants access after verifying the secondary orientation / qualification. Record how it was verified - it is kept with the permission.</p>
+</div>
+<div class="req-list">
+    @foreach (var g in Model)
+    {
+        <section class="group-card" data-group="@g.Id">
+            <div class="req-head">
+                <h4>@g.Name</h4>
+                <span class="badge tier-@((int)g.Tier)">@TierNames.Display(g.Tier)</span>
+                <span class="spacer"></span>
+                <span class="muted small">@g.ContactEmail</span>
+            </div>
+            <p class="small muted">Members: @string.Join(", ", users.Where(u => u.GroupId == g.Id).Select(u => $"{u.Name} ({u.GroupRole})"))</p>
+            <div class="perm-row">
+                <strong>Tier</strong>
+                <span></span>
+                <select data-tier>
+                    @foreach (CustomerTier t in Enum.GetValues<CustomerTier>())
+                    {
+                        <option value="@t" selected="@(t == g.Tier)">@TierNames.Display(t)@(t == CustomerTier.Tier4 ? " - Law Enforcement / Military" : "")</option>
+                    }
+                </select>
+            </div>
+            @foreach (var r in specialized)
+            {
+                var perm = g.RangePermissions.FirstOrDefault(p => p.RangeId == r.Id);
+                <div class="perm-row">
+                    <div><strong>@r.Name</strong><div class="muted tiny">@r.SpecializedRequirement</div></div>
+                    <input type="checkbox" data-range="@r.Id" @(perm is not null ? "checked" : "") />
+                    <div>
+                        <input type="text" data-note="@r.Id" value="@perm?.VerificationNote" placeholder="How was the orientation / qualification verified? (required to grant)" />
+                        @if (perm is not null)
+                        {
+                            <div class="muted tiny">Granted @perm.GrantedOn.ToString("MMM d, yyyy") by @perm.GrantedBy</div>
+                        }
+                    </div>
+                </div>
+            }
+            <div class="req-actions"><button class="e-btn e-primary e-small" data-save="@g.Id">Save @g.Name</button></div>
+            <div class="req-msg result"></div>
+        </section>
+    }
+</div>
+
+@section Scripts {
+    <script>
+        (function () {
+            // Syncfusion Switch for each permission toggle
+            document.querySelectorAll('input[data-range]').forEach(i => new ej.buttons.Switch({ checked: i.checked }).appendTo(i));
+            document.querySelectorAll('[data-save]').forEach(btn => btn.onclick = async () => {
+                const card = btn.closest('[data-group]');
+                const payload = {
+                    Tier: card.querySelector('[data-tier]').value,
+                    RangePermissions: [...card.querySelectorAll('input[data-range]')].map(i => ({
+                        RangeId: +i.dataset.range, Granted: i.ej2_instances[0].checked,
+                        VerificationNote: card.querySelector(`[data-note="${i.dataset.range}"]`).value
+                    }))
+                };
+                const res = await fetch(appUrl('/api/groups/' + card.dataset.group), { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const body = await res.json().catch(() => ({}));
+                card.querySelector('.req-msg').innerHTML = res.ok
+                    ? '<div class="msg ok">Saved. The group sees the change the next time it opens the booking calendar.</div>'
+                    : '<div class="msg err">' + (body.Errors || ['Save failed']).join('<br/>') + '</div>';
+            });
+        })();
+    </script>
+}

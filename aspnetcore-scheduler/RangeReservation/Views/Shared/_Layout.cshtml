@@ -1,6 +1,11 @@
+@inject RangeReservationPoc.Services.InMemoryDataStore Store
 @{
     var user = ViewBag.User as AppUser;
-    var path = Context.Request.Path.Value ?? "/";
+    var userGroup = Store.FindGroup(user?.GroupId);
+    var pathBase = Context.Request.PathBase.Value ?? "";
+    var fullPath = Context.Request.Path.Value ?? "/";
+    var path = fullPath.StartsWith(pathBase) ? fullPath.Substring(pathBase.Length) : fullPath;
+    if (string.IsNullOrEmpty(path)) path = "/";
 }
 <!DOCTYPE html>
 <html lang="en">
@@ -37,25 +42,45 @@
         @if (user is not null)
         {
             <nav class="app-nav">
-                <a href="~/" class="@(path == "/" || path.StartsWith("/Home") ? "active" : "")">Scheduler</a>
                 @if (user.Role == Roles.Admin)
                 {
+                    <a href="~/Admin/Queue" class="@(path.StartsWith("/Admin/Queue") ? "active" : "")">Review queue</a>
+                    <a href="~/" class="@(path == "/" || path.StartsWith("/Home") ? "active" : "")">Scheduler</a>
                     <a href="~/Admin/Blackouts" class="@(path.StartsWith("/Admin/Blackouts") ? "active" : "")">Blackouts</a>
-                    <a href="~/Admin/Policies" class="@(path.StartsWith("/Admin/Policies") ? "active" : "")">Tier policies</a>
+                    <a href="~/Admin/Groups" class="@(path.StartsWith("/Admin/Groups") ? "active" : "")">Groups &amp; permissions</a>
+                    <a href="~/Admin/Policies" class="@(path.StartsWith("/Admin/Policies") ? "active" : "")">Policies</a>
                 }
+                else
+                {
+                    <a href="~/" class="@(path == "/" || path == "/Home" || path.StartsWith("/Home/Index") ? "active" : "")">Book a range</a>
+                    <a href="~/Home/MyReservations" class="@(path.StartsWith("/Home/MyReservations") ? "active" : "")">My reservations</a>
+                }
+                <a href="~/Public/Calendar" class="@(path.StartsWith("/Public") ? "active" : "")">Public calendar</a>
             </nav>
             <div class="user-chip">
                 <div class="user-meta">
                     <div class="user-name">@user.Name</div>
                     <div class="user-role">
-                        @if (user.Role == Roles.Admin) { <span class="badge badge-admin">Administrator</span> }
-                        else { <span class="badge tier-@user.Tier?.ToString().ToLower()">@user.Tier tier</span> }
+                        @if (user.Role == Roles.Admin) { <span class="badge badge-admin">AZGFD Administrator</span> }
+                        else if (userGroup is not null)
+                        {
+                            <span class="muted-light">@userGroup.Name</span>
+                            <span class="badge tier-@((int)userGroup.Tier)">@TierNames.Display(userGroup.Tier)</span>
+                            <span class="badge badge-role">@user.GroupRole</span>
+                        }
                     </div>
                 </div>
                 <form method="post" asp-controller="Account" asp-action="Logout">
                     <button type="submit" class="e-btn e-small e-outline">Switch user</button>
                 </form>
             </div>
+        }
+        else
+        {
+            <nav class="app-nav" style="margin-left:auto">
+                <a href="~/Public/Calendar" class="@(path.StartsWith("/Public") ? "active" : "")">Public calendar</a>
+                <a href="~/Account/Login">Sign in</a>
+            </nav>
         }
     </header>
 

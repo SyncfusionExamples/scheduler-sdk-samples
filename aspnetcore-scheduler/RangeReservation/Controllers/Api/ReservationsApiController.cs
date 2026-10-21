@@ -6,8 +6,8 @@ using RangeReservationPoc.Services;
 namespace RangeReservationPoc.Controllers.Api;
 
 /// <summary>
-/// REST endpoints consumed by the Syncfusion Scheduler. These are deliberately thin so the same contract can
-/// sit in front of the customer's existing reservation services.
+/// REST endpoints consumed by the Syncfusion Scheduler and the admin screens. Deliberately thin so the same contract
+/// can sit in front of the customer's existing reservation services.
 /// All date-times are facility wall-clock (America/Phoenix) in "yyyy-MM-ddTHH:mm:ss" form.
 /// </summary>
 [ApiController]
@@ -24,39 +24,54 @@ public class ReservationsApiController : ControllerBase
         _service = service;
     }
 
-    /// <summary>Events for the visible date range (reservations + blackout blocks). Customers get masked data.</summary>
-    [HttpGet("schedule/events")]
-    public ActionResult<List<ScheduleEventDto>> GetEvents([FromQuery] DateTime? start, [FromQuery] DateTime? end)
-    {
-        var user = User.CurrentUser(_store);
-        if (user is null) return Unauthorized();
-        return _service.GetEvents(user, start, end);
-    }
+    private AppUser? Me => User.CurrentUser(_store);
 
-    /// <summary>
-    /// Single transactional endpoint for create / update / delete (same added/changed/deleted shape the
-    /// Scheduler produces). Returns 422 with every rule violation when the transaction is rejected.
-    /// </summary>
+    // ---------------- Calendar ----------------
+    [HttpGet("schedule/events")]
+    public ActionResult<List<ScheduleEventDto>> GetEvents() => Me is { } me ? _service.GetEvents(me) : Unauthorized();
+
+    /// <summary>UC-06 / 07 / 09: create, edit or cancel - one all-or-nothing transaction. 422 lists every violation.</summary>
     [HttpPost("reservations/batch")]
     public ActionResult<BatchResult> Batch([FromBody] ReservationBatchRequest request)
     {
-        var user = User.CurrentUser(_store);
-        if (user is null) return Unauthorized();
-        var result = _service.ApplyBatch(user, request);
+        if (Me is not { } me) return Unauthorized();
+        var result = _service.ApplyBatch(me, request);
         return result.Success ? Ok(result) : UnprocessableEntity(result);
     }
 
-    [HttpGet("policies")]
-    public ActionResult<List<TierPolicy>> GetPolicies() => _service.GetPolicies();
+    // ---------------- Requests (dashboard + UC-12 queue) ----------------
+    [HttpGet("requests")]
+    public ActionResult<List<RequestSummary>> Requests([FromQuery] ReservationStatus? status)
+        => Me is { } me ? _service.GetRequests(me, status) : Unauthorized();
 
-    [HttpPut("policies")]
-    [Authorize(Roles = Roles.Admin)]
-    public IActionResult UpdatePolicies([FromBody] List<TierPolicy> policies)
+    [HttpPost("requests/{requestId}/cancel")]
+    public IActionResult Cancel(string requestId)
     {
-        var errors = _service.UpdatePolicies(policies);
-        return errors.Count == 0 ? Ok(_service.GetPolicies()) : UnprocessableEntity(new { Errors = errors });
+        if (Me is not { } me) return Unauthorized();
+        var (ok, errors) = _service.CancelRequest(requestId, me);
+        return ok ? NoContent() : UnprocessableEntity(new { Errors = errors });
     }
 
+    [HttpPost("requests/{requestId}/approve")]
+    [Authorize(Roles = Roles.Admin)]
+    public IActionResult Approve(string requestId)
+    {
+        var (ok, errors) = _service.Approve(requestId, Me!);
+        return ok ? NoContent() : UnprocessableEntity(new { Errors = errors });
+    }
+
+    [HttpPost("requests/{requestId}/deny")]
+    [Authorize(Roles = Roles.Admin)]
+    public IActionResult Deny(string requestId, [FromBody] DenyInput input)
+    {
+        var (ok, errors) = _service.Deny(requestId, input.Reason, Me!);
+        return ok ? NoContent() : UnprocessableEntity(new { Errors = errors });
+    }
+
+    [HttpGet("notifications")]
+    public ActionResult<List<NotificationRecord>> Notifications() => Me is { } me ? _service.GetNotifications(me) : Unauthorized();
+
+    // ---------------- UC-13 blackouts ----------------
     [HttpGet("blackouts")]
     [Authorize(Roles = Roles.Admin)]
     public ActionResult<List<Blackout>> GetBlackouts() => _service.GetBlackouts();
@@ -72,4 +87,26 @@ public class ReservationsApiController : ControllerBase
     [HttpDelete("blackouts/{id:int}")]
     [Authorize(Roles = Roles.Admin)]
     public IActionResult DeleteBlackout(int id) => _service.DeleteBlackout(id) ? NoContent() : NotFound();
+
+    // ---------------- UC-14 groups & policies ----------------
+    [HttpPut("groups/{id:int}")]
+    [Authorize(Roles = Roles.Admin)]
+    public IActionResult UpdateGroup(int id, [FromBody] GroupUpdateInput input)
+    {
+        var (ok, errors) = _service.UpdateGroup(id, input, Me!);
+        return ok ? NoContent() : UnprocessableEntity(new { Errors = errors });
+    }
+
+    [HttpPut("settings")]
+    [Authorize(Roles = Roles.Admin)]
+    public IActionResult UpdateSettings([FromBody] SettingsInput input)
+    {
+        var errors = _service.UpdateSettings(input);
+        return errors.Count == 0 ? NoContent() : UnprocessableEntity(new { Errors = errors });
+    }
+
+    // ---------------- Public (external calendars) ----------------
+    [HttpGet("public/events")]
+    [AllowAnonymous]
+    public ActionResult<List<ScheduleEventDto>> PublicEvents() => _service.GetEvents(null);
 }

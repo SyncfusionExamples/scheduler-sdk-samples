@@ -1,23 +1,42 @@
 @model List<TierPolicy>
 @{
-    ViewData["Title"] = "Tier policies";
+    ViewData["Title"] = "Policies";
+    var settings = (FacilitySettings)ViewBag.Settings;
     var fields = new (string Key, string Label)[]
     {
         ("AdvanceBookingDays", "Book ahead (days)"), ("MinLeadHours", "Lead time (h)"), ("MaxHoursPerBooking", "Max hours / booking"),
-        ("MaxBookingsPerDay", "Bookings / day"), ("MaxActiveFutureBookings", "Upcoming bookings"), ("MaxHoursPerMonth", "Hours / month"),
-        ("MaxRecurringOccurrences", "Max recurring occurrences"), ("MaxSlotsPerTransaction", "Slots / transaction"), ("CancellationCutoffHours", "Change/cancel cutoff (h)")
+        ("MaxDatesPerTransaction", "Dates per multi-date booking"), ("CancellationCutoffHours", "Change/cancel cutoff (h)")
     };
 }
 <section class="card">
+    <h3>Facility rules</h3>
+    <div class="perm-row">
+        <strong>Tier 4 Monday rule (UC-11)</strong>
+        <input type="checkbox" id="mondayRule" @(settings.MondayExclusiveForTier4 ? "checked" : "") />
+        <span class="muted small">Mondays are reserved exclusively for Tier 4 (Law Enforcement / Military) groups.</span>
+    </div>
+    <div class="perm-row">
+        <strong>Same-group overlap (UC-10)</strong>
+        <input type="checkbox" id="sameGroup" @(settings.AllowSameGroupOverlap ? "checked" : "") />
+        <span class="muted small">Allow a group to hold overlapping reservations on the same range. Overlaps with other organizations are always blocked.</span>
+    </div>
+    <div class="perm-row">
+        <strong>Recurring cap (UC-09)</strong>
+        <span></span>
+        <span class="muted small">Recurring series (weekly / monthly) must end by Dec 31 of the following calendar year (currently @RangeReservationPoc.Services.ReservationRulesEngine.RecurrenceCap(DateTime.Today).ToString("MMM d, yyyy")).</span>
+    </div>
+</section>
+
+<section class="card" style="margin-top:12px">
     <h3>Tier booking policies</h3>
-    <p class="muted small">Changes apply immediately to new bookings and edits (validated server-side). Range-level limits (capacity, firearm types, qualification, minimum tier) are configured per range.</p>
+    <p class="muted small">Applied to corporate users (admins can override when booking on a group's behalf). Validated server-side on submission and again on approval.</p>
     <table class="data" id="policyTable">
         <thead>
             <tr>
                 <th>Rule</th>
                 @foreach (var p in Model)
                 {
-                    <th><span class="badge tier-@p.Tier.ToString().ToLower()">@p.DisplayName</span><div class="muted small">@p.Audience</div></th>
+                    <th><span class="badge tier-@((int)p.Tier)">@p.DisplayName</span><div class="muted small">@p.Audience</div></th>
                 }
             </tr>
         </thead>
@@ -43,7 +62,7 @@
         </tbody>
     </table>
     <div class="cart-actions">
-        <button id="savePolicies" class="e-btn e-primary">Save policies</button>
+        <button id="savePolicies" class="e-btn e-primary">Save policies &amp; rules</button>
     </div>
     <div id="policyResult" class="result"></div>
 </section>
@@ -52,15 +71,18 @@
     <script>
         (function () {
             const policies = @Html.Raw(Json.Serialize(Model));
+            const monday = new ej.buttons.Switch({ checked: document.getElementById('mondayRule').checked }); monday.appendTo('#mondayRule');
+            const same = new ej.buttons.Switch({ checked: document.getElementById('sameGroup').checked }); same.appendTo('#sameGroup');
             document.getElementById('savePolicies').onclick = async () => {
                 document.querySelectorAll('#policyTable input').forEach(i => {
                     const p = policies.find(x => x.Tier === i.dataset.tier);
                     p[i.dataset.key] = i.type === 'checkbox' ? i.checked : Number(i.value);
                 });
-                const res = await fetch(appUrl('/api/policies'), { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(policies) });
+                const payload = { Policies: policies, Settings: { MondayExclusiveForTier4: monday.checked, AllowSameGroupOverlap: same.checked } };
+                const res = await fetch(appUrl('/api/settings'), { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                 const body = await res.json().catch(() => ({}));
                 document.getElementById('policyResult').innerHTML = res.ok
-                    ? '<div class="msg ok">Policies saved.</div>'
+                    ? '<div class="msg ok">Saved.</div>'
                     : '<div class="msg err">' + (body.Errors || ['Save failed']).join('<br/>') + '</div>';
             };
         })();

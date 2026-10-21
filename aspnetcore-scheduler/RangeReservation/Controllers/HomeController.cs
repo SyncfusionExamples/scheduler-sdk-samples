@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RangeReservationPoc.Models;
@@ -17,38 +18,64 @@ public class HomeController : Controller
         _clock = clock;
     }
 
+    /// <summary>Reservation calendar (UC-06 / 07 / 09).</summary>
     public IActionResult Index()
     {
         var user = User.CurrentUser(_store);
         if (user is null) return RedirectToAction("Login", "Account");
+        var group = _store.FindGroup(user.GroupId);
         ViewBag.User = user;
-        ViewBag.Facilities = _store.Facilities;
-        ViewBag.Ranges = _store.Ranges;
-        ViewBag.Context = BuildClientContext(user);
+        ViewBag.Group = group;
         ViewBag.Now = _clock.Now;
+        // UC-14: a group only sees standard ranges it is eligible for plus the specialized ranges it has been granted.
+        var visible = _store.Ranges.Where(r => user.Role == Roles.Admin
+            || (_store.IsRangeAuthorized(group, r) && (group is null || r.MinimumTier <= group.Tier))).ToList();
+        ViewBag.Ranges = visible;
+        ViewBag.Facilities = _store.Facilities.Where(f => visible.Any(r => r.FacilityId == f.Id)).ToList();
+        ViewBag.Context = BuildClientContext(user, group, visible);
         return View();
     }
 
-    /// <summary>Everything the browser needs to mirror server rules in the UI (the server stays authoritative).</summary>
-    private object BuildClientContext(AppUser user) => new
+    /// <summary>UC-12: the group's dashboard - request status, denial reasons and email notices.</summary>
+    public IActionResult MyReservations()
     {
-        User = new { user.Id, user.Name, user.Role, Tier = user.Tier?.ToString(), IsAdmin = user.Role == Roles.Admin },
-        Policy = user.Tier is { } t ? _store.Policy(t) : null,
-        Policies = _store.Policies,
-        Facilities = _store.Facilities,
-        Ranges = _store.Ranges.Select(r => new
+        var user = User.CurrentUser(_store);
+        if (user is null) return RedirectToAction("Login", "Account");
+        if (user.Role == Roles.Admin) return RedirectToAction("Queue", "Admin");
+        ViewBag.User = user;
+        ViewBag.Group = _store.FindGroup(user.GroupId);
+        return View();
+    }
+
+    private object BuildClientContext(AppUser user, CorporateGroup? group, List<ShootingRange> visible) => new
+    {
+        User = new
         {
-            r.Id, r.FacilityId, r.Name, r.RangeType, r.Color, r.MaxParticipants, r.MaxHoursPerBooking,
-            r.MaxSlotsPerTransaction, MinimumTier = r.MinimumTier.ToString(), MinimumTierValue = (int)r.MinimumTier,
-            r.RequiredQualification, r.AllowedFirearms,
+            user.Id, user.Name, user.Role, IsAdmin = user.Role == Roles.Admin, user.GroupId,
+            GroupName = group?.Name, GroupRole = user.GroupRole?.ToString(),
+            Tier = group?.Tier.ToString(), TierName = group is null ? null : TierNames.Display(group.Tier)
+        },
+        Policy = group is null ? null : _store.Policy(group.Tier),
+        Settings = _store.Settings,
+        // Machine-readable dates for scheduler.js: always invariant culture. Some server cultures (e.g. en-DK, fi, da)
+        // use "." as the time separator or a non-Gregorian calendar, which the client could not parse.
+        RecurrenceCap = ReservationRulesEngine.RecurrenceCap(_clock.Now).ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture),
+        SingleRangeMessage = ReservationRulesEngine.SingleRangeMessage,
+        Facilities = _store.Facilities,
+        Ranges = visible.Select(r => new
+        {
+            r.Id, r.FacilityId, r.Name, r.RangeType, r.Color, r.MaxHeadcount, r.MaxHoursPerBooking,
+            MinimumTier = r.MinimumTier.ToString(), MinimumTierName = TierNames.Display(r.MinimumTier), MinimumTierValue = (int)r.MinimumTier,
+            r.IsSpecialized, r.SpecializedRequirement, r.AllowedFirearms, r.AllowedTargetTypes, r.MaxTargetDistanceYards,
             OpenTime = r.OpenTime.ToString(@"hh\:mm"), CloseTime = r.CloseTime.ToString(@"hh\:mm")
         }),
-        Customers = user.Role == Roles.Admin
-            ? _store.Users.Where(u => u.Role == Roles.Customer).Select(u => new { u.Id, u.Name, Tier = u.Tier.ToString() })
+        Groups = user.Role == Roles.Admin
+            ? _store.Groups.Select(g => new { g.Id, g.Name, Tier = g.Tier.ToString(), TierName = TierNames.Display(g.Tier), Permissions = g.RangePermissions.Select(p => p.RangeId) })
             : null,
-        Now = _clock.Now.ToString("yyyy-MM-ddTHH:mm:ss"),
+        Now = _clock.Now.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture),
         TimeZone = _clock.TimeZoneId,
-        Firearms = new[] { "Handgun", "Rimfire", "Rifle", "Shotgun" }
+        Firearms = new[] { "Handgun", "Rimfire", "Rifle", "Shotgun", "Muzzleloader" },
+        TargetTypes = new[] { "Paper", "Steel", "Clay", "Reactive", "Silhouette" }
     };
 
     public IActionResult Error() => Content("An unexpected error occurred.");

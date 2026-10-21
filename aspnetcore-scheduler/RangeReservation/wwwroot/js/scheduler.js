@@ -13,8 +13,9 @@ const ctx = window.appContext;
 ej.base.L10n.load({ 'en-US': { schedule: { newEvent: 'New Reservation', editEvent: 'Edit Reservation', deleteEvent: 'Cancel Reservation', title: 'Reservation title' } } });
 const isAdmin = !!ctx.User.IsAdmin;
 const myPolicy = ctx.Policy;                       // null for admins
-const tierRank = { Bronze: 1, Silver: 2, Gold: 3, Platinum: 4 };
+const tierRank = { Tier1: 1, Tier2: 2, Tier3: 3, Tier4: 4 };
 const myTierRank = ctx.User.Tier ? tierRank[ctx.User.Tier] : 99;
+const recurrenceCap = fromWallLate(ctx.RecurrenceCap);   // UC-09: end of the following calendar year
 const rangesById = Object.fromEntries(ctx.Ranges.map(r => [r.Id, r]));
 const loadedAt = Date.now();
 
@@ -37,8 +38,15 @@ function toWall(d) {
 function fromWall(s) {
     if (!s) return null;
     if (s instanceof Date) return s;
-    const m = /(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/.exec(s);
+    const m = /(\d{4})-(\d{2})-(\d{2})T(\d{2})[:.](\d{2})(?:[:.](\d{2}))?/.exec(s);
     return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)) : new Date(s);
+}
+// Parses facility wall-clock "yyyy-MM-ddTHH:mm:ss" (also tolerates "." as time separator) without throwing.
+function fromWallLate(s) {
+    const m = /(\d{4})-(\d{2})-(\d{2})T(\d{2})[:.](\d{2})(?:[:.](\d{2}))?/.exec(s || '');
+    if (m) return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+    const d = new Date(s);
+    return isNaN(d) ? new Date(new Date().getFullYear() + 1, 11, 31, 23, 59, 59) : d;
 }
 function facilityNow() { return new Date(fromWall(ctx.Now).getTime() + (Date.now() - loadedAt)); }
 function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
@@ -85,11 +93,12 @@ function toServer(e) {
         RecurrenceException: mapEx(e.RecurrenceException, recUtcToWall) || null,
         FacilityId: num(e.FacilityId),
         RangeId: num(e.RangeId),
-        CustomerId: e.CustomerId || null,
-        FirearmType: e.FirearmType || null,
-        Caliber: e.Caliber || null,
-        Participants: num(e.Participants),
-        QualificationId: e.QualificationId || null,
+        GroupId: num(e.GroupId),
+        Headcount: num(e.Headcount),
+        FirearmTypes: Array.isArray(e.FirearmTypes) ? e.FirearmTypes : (e.FirearmTypes ? String(e.FirearmTypes).split(',') : []),
+        TargetType: e.TargetType || null,
+        TargetDistanceYards: num(e.TargetDistanceYards),
+        TargetCount: num(e.TargetCount),
         RsoRequested: e.RsoRequested === true || e.RsoRequested === 'true',
         Description: e.Description || null
     };
@@ -167,7 +176,10 @@ async function onActionComplete(args) {
     await loadEvents();
 
     if (result.ok) {
-        const verb = args.requestType === 'eventCreated' ? 'Reservation booked' : args.requestType === 'eventChanged' ? 'Reservation updated' : 'Reservation cancelled';
+        let verb;
+        if (args.requestType === 'eventCreated')
+            verb = result.body.Status === 'Pending' ? `Request ${result.body.RequestId} submitted for admin review` : `Reservation ${result.body.RequestId} approved`;
+        else verb = args.requestType === 'eventChanged' ? 'Reservation updated' : 'Reservation cancelled';
         showToast(verb, result.warnings, 'e-toast-success');
     } else {
         showToast('Request rejected by booking rules', result.errors, 'e-toast-danger');
@@ -183,10 +195,12 @@ function onActionBegin(args) {
     // Customers cannot create events in cells the UI has marked unavailable (server re-checks anyway).
     if (args.requestType === 'eventCreate' && !isAdmin) {
         const recs = args.addedRecords || [];
-        const bad = recs.find(r => !isRangeEligible(r.RangeId) || isOutsideWindow(new Date(r.StartTime)));
+        const bad = recs.find(r => !isRangeEligible(r.RangeId) || isMondayBlocked(new Date(r.StartTime)) || (!r.RecurrenceRule && isOutsideWindow(new Date(r.StartTime))));
         if (bad) {
             args.cancel = true;
-            showToast('Not available for your tier', [rangeLabel(bad.RangeId) + ' on ' + new Date(bad.StartTime).toLocaleString() + ' is outside your booking permissions.'], 'e-toast-warning');
+            const why = isMondayBlocked(new Date(bad.StartTime)) ? 'Mondays are reserved exclusively for Tier 4 (Law Enforcement / Military) groups.'
+                : rangeLabel(bad.RangeId) + ' on ' + new Date(bad.StartTime).toLocaleString() + ' is outside your group\'s booking permissions.';
+            showToast('Not available for your group', [why], 'e-toast-warning');
         }
     }
 }
@@ -204,11 +218,23 @@ function onCellClick(args) {
     // Always open the full editor (custom fields are required), not the quick "add title" popup.
     if (!isAdmin && args.element && args.element.classList.contains('slot-disabled')) {
         args.cancel = true;
-        showToast('Not available', ['This slot is outside your tier\'s booking window or range eligibility.'], 'e-toast-warning');
+        showToast('Not available', [isMondayBlocked(args.startTime) ? 'Mondays are reserved exclusively for Tier 4 (Law Enforcement / Military) groups.' : 'This slot is outside your group\'s booking window or range eligibility.'], 'e-toast-warning');
         return;
     }
     args.cancel = true;
-    scheduleObj.openEditor({ startTime: args.startTime, endTime: args.endTime, isAllDay: args.isAllDay && isAdmin, groupIndex: args.groupIndex }, 'Add');
+    openNewEditor(args.startTime, args.endTime, args.groupIndex, args.isAllDay && isAdmin);
+}
+
+// Opens the full editor for a new reservation on the clicked range. Event data (not cell data) is passed so the
+// Facility / Range fields are pre-filled for every row - cell data with groupIndex 0 would leave them empty.
+function openNewEditor(start, end, groupIndex, isAllDay) {
+    const res = scheduleObj.getResourcesByIndex(groupIndex);
+    const g = (res && res.groupData) || {};
+    const r = rangesById[Number(g.RangeId)];
+    scheduleObj.openEditor({
+        StartTime: new Date(start), EndTime: new Date(end), IsAllDay: !!isAllDay, FacilityId: g.FacilityId, RangeId: g.RangeId,
+        Headcount: 1, FirearmTypes: r ? [r.AllowedFirearms[0]] : [], TargetType: r ? r.AllowedTargetTypes[0] : null
+    }, 'Add', true);
 }
 
 function onCellDoubleClick(args) {
@@ -234,8 +260,19 @@ function onPopupOpen(args) {
     if (data.Kind === 'pending') {
         args.cancel = true; return;
     }
-    if (args.type === 'QuickInfo' && data.Kind === 'masked') {
-        // Public users only learn that the slot is taken.
+    if (args.type === 'QuickInfo' && data.Kind === 'masked') return;   // other organizations: only "Reserved"
+    if (args.type === 'QuickInfo' && data.Kind === 'reservation') {
+        const content = args.element.querySelector('.e-popup-content');
+        if (content) {
+            content.querySelectorAll('.qi-extra').forEach(x => x.remove());
+            const div = document.createElement('div');
+            div.className = 'qi-extra';
+            div.innerHTML = `<span class="status status-${(data.Status || '').toLowerCase()}">${escapeHtml(data.Status)}</span> <code>${escapeHtml(data.RequestId)}</code>` +
+                `<div>${escapeHtml(data.GroupName || '')}${data.Tier ? ' · ' + escapeHtml(data.Tier) : ''}</div>` +
+                `<div class="muted small">${data.Headcount || 0} people · ${escapeHtml((data.FirearmTypes || []).join(', '))} · ${escapeHtml(data.TargetType || '')}${data.TargetDistanceYards ? ' @ ' + data.TargetDistanceYards + ' yd' : ''}</div>` +
+                `<div class="muted small">Submitted by ${escapeHtml(data.SubmittedByName || '')}</div>`;
+            content.appendChild(div);
+        }
         return;
     }
     if (args.type === 'Editor') {
@@ -257,9 +294,8 @@ function onRenderCell(args) {
         if (range && args.element.textContent.indexOf(range.Name) >= 0 && !args.element.classList.contains('e-parent-node')) {
             const meta = document.createElement('div');
             meta.className = 'res-meta';
-            const tierCls = 'tier-' + range.MinimumTier.toLowerCase();
-            meta.innerHTML = `<span class="badge ${tierCls}">${range.MinimumTier}+</span>`
-                + (range.RequiredQualification ? `<span class="badge badge-qual" title="Qualification required">${escapeHtml(range.RequiredQualification)} cert</span>` : '')
+            meta.innerHTML = (range.MinimumTierValue > 1 ? `<span class="badge tier-${range.MinimumTierValue}">${range.MinimumTierName} only</span>` : '')
+                + (range.IsSpecialized ? `<span class="badge badge-qual" title="${escapeHtml(range.SpecializedRequirement)}">Specialized</span>` : '')
                 + `<span class="res-hours">${range.OpenTime}-${range.CloseTime}</span>`;
             const host = args.element.querySelector('.e-resource-text') || args.element;
             host.appendChild(meta);
@@ -267,7 +303,8 @@ function onRenderCell(args) {
     }
     if (isAdmin) return;
     if (args.elementType === 'workCells' || args.elementType === 'monthCells') {
-        let blocked = isOutsideWindow(args.date, args.elementType === 'monthCells');
+        let blocked = isMondayBlocked(args.date) || isOutsideWindow(args.date, args.elementType === 'monthCells');
+        if (isMondayBlocked(args.date)) args.element.classList.add('slot-monday');
         if (!blocked && args.groupIndex !== undefined) {
             const res = scheduleObj.getResourcesByIndex(args.groupIndex);
             if (res && res.groupData && !isRangeEligible(res.groupData.RangeId)) blocked = true;
@@ -282,6 +319,8 @@ function onEventRendered(args) {
     if (d.Kind === 'blackout') { el.classList.add('ev-blackout'); return; }
     if (d.Kind === 'masked') { el.classList.add('ev-masked'); el.style.backgroundColor = ''; return; }
     if (d.Kind === 'pending') { el.classList.add('ev-pending'); return; }
+    if (d.Status === 'Pending') el.classList.add('ev-review');
+    if (d.Status === 'Approved') el.classList.add('ev-approved');
     if (!isAdmin && d.IsOwn) el.classList.add('ev-own');
 
     const subject = el.querySelector('.e-subject');
@@ -289,10 +328,10 @@ function onEventRendered(args) {
         const sub = document.createElement('div');
         sub.className = 'ev-sub';
         const parts = [];
-        if (isAdmin && d.CustomerName) parts.push(d.CustomerName + (d.Tier ? ' · ' + d.Tier : ''));
-        if (d.Participants) parts.push(d.Participants + (d.Participants === 1 ? ' shooter' : ' shooters'));
-        if (d.FirearmType) parts.push(d.FirearmType + (d.Caliber ? ' ' + d.Caliber : ''));
-        if (d.BookingGroupId) parts.push('multi-slot');
+        if (d.Status === 'Pending') parts.push('PENDING REVIEW');
+        if (isAdmin && d.GroupName) parts.push(d.GroupName + (d.Tier ? ' · ' + d.Tier : ''));
+        if (d.Headcount) parts.push(d.Headcount + ' people');
+        if (d.FirearmTypes && d.FirearmTypes.length) parts.push(d.FirearmTypes.join('/'));
         if (d.AdminOverride) parts.push('override');
         sub.textContent = parts.join(' · ');
         subject.insertAdjacentElement('afterend', sub);
@@ -315,10 +354,14 @@ function isOutsideWindow(date, wholeDay) {
     if (wholeDay) return date < startOfDay(now);
     return date < new Date(now.getTime() + myPolicy.MinLeadHours * 3600000);
 }
+// UC-11: Monday slots are reserved for Tier 4 (Law Enforcement / Military).
+function isMondayBlocked(date) {
+    return !isAdmin && ctx.Settings.MondayExclusiveForTier4 && ctx.User.Tier !== 'Tier4' && date && new Date(date).getDay() === 1;
+}
 const rangeLabel = id => (rangesById[Number(id)] || {}).Name || 'Range';
 
 /* ------------------------------------------------------------------------------------------
-   Editor customisation: extra reservation attributes + tier-aware restrictions
+   Editor customisation (UC-06): headcount, firearm types, target attributes + tier-aware restrictions
    ------------------------------------------------------------------------------------------ */
 function setupEditor(args) {
     const el = args.element;
@@ -329,104 +372,122 @@ function setupEditor(args) {
         const wrap = document.createElement('div');
         wrap.className = 'custom-fields';
         wrap.innerHTML =
-            '<div class="cf-title">Range & firearm details</div>' +
+            '<div class="cf-title">Reservation details</div>' +
             '<div class="cf-grid">' +
-            '  <div><input id="cfFirearm" /></div>' +
-            '  <div><input id="cfCaliber" /></div>' +
-            '  <div><input id="cfParticipants" /></div>' +
-            '  <div><input id="cfQualification" /></div>' +
-            (isAdmin ? '  <div class="cf-wide"><input id="cfCustomer" /></div>' : '') +
+            (isAdmin ? '  <div class="cf-wide"><input id="cfGroup" /></div>' : '') +
+            '  <div><input id="cfHeadcount" /></div>' +
+            '  <div><input id="cfFirearms" /></div>' +
+            '  <div><input id="cfTargetType" /></div>' +
+            '  <div class="two-inline"><input id="cfTargetDistance" /><input id="cfTargetCount" /></div>' +
             '  <div class="cf-wide"><input id="cfRso" type="checkbox" /></div>' +
             '</div>' +
             '<div class="cf-hint" id="cfHint"></div>';
         form.appendChild(wrap);
 
-        editor.firearm = new ej.dropdowns.DropDownList({ dataSource: ctx.Firearms, placeholder: 'Firearm type *', floatLabelType: 'Always' });
-        editor.firearm.appendTo('#cfFirearm');
-        editor.caliber = new ej.inputs.TextBox({ placeholder: 'Caliber / gauge', floatLabelType: 'Always' });
-        editor.caliber.appendTo('#cfCaliber');
-        editor.participants = new ej.inputs.NumericTextBox({ placeholder: 'Participants *', floatLabelType: 'Always', min: 1, max: 50, format: 'n0', decimals: 0, validateDecimalOnType: true });
-        editor.participants.appendTo('#cfParticipants');
-        editor.qualification = new ej.inputs.TextBox({ placeholder: 'Qualification / cert ID', floatLabelType: 'Always' });
-        editor.qualification.appendTo('#cfQualification');
         if (isAdmin) {
-            editor.customer = new ej.dropdowns.DropDownList({
-                dataSource: [{ Id: '', Name: '(Facility hold - no customer)' }].concat(ctx.Customers.map(c => ({ Id: c.Id, Name: `${c.Name} (${c.Tier})` }))),
-                fields: { text: 'Name', value: 'Id' }, placeholder: 'Book on behalf of', floatLabelType: 'Always'
+            editor.group = new ej.dropdowns.DropDownList({
+                dataSource: [{ Id: 0, Name: '(Facility hold - no group)' }].concat(ctx.Groups.map(g => ({ Id: g.Id, Name: `${g.Name} (${g.TierName})` }))),
+                fields: { text: 'Name', value: 'Id' }, placeholder: 'Book on behalf of (auto-approved)', floatLabelType: 'Always'
             });
-            editor.customer.appendTo('#cfCustomer');
+            editor.group.appendTo('#cfGroup');
         }
+        editor.headcount = new ej.inputs.NumericTextBox({ placeholder: 'Headcount *', floatLabelType: 'Always', min: 1, max: 100, format: 'n0', decimals: 0, validateDecimalOnType: true });
+        editor.headcount.appendTo('#cfHeadcount');
+        editor.firearms = new ej.dropdowns.MultiSelect({ dataSource: ctx.Firearms, placeholder: 'Firearm types *', floatLabelType: 'Always', mode: 'Box' });
+        editor.firearms.appendTo('#cfFirearms');
+        editor.targetType = new ej.dropdowns.DropDownList({ dataSource: ctx.TargetTypes, placeholder: 'Target type *', floatLabelType: 'Always' });
+        editor.targetType.appendTo('#cfTargetType');
+        editor.targetDistance = new ej.inputs.NumericTextBox({ placeholder: 'Distance (yd)', floatLabelType: 'Always', min: 1, max: 1000, format: 'n0' });
+        editor.targetDistance.appendTo('#cfTargetDistance');
+        editor.targetCount = new ej.inputs.NumericTextBox({ placeholder: 'Targets', floatLabelType: 'Always', min: 1, max: 200, format: 'n0' });
+        editor.targetCount.appendTo('#cfTargetCount');
         editor.rso = new ej.buttons.CheckBox({ label: 'Request a Range Safety Officer (RSO)' });
         editor.rso.appendTo('#cfRso');
 
-        // Scheduler collects every ".e-field" with a "name" when the event is saved.
+        // The Scheduler collects every ".e-field" with a "name" when the event is saved.
         const setField = (sel, name) => { const i = el.querySelector(sel); if (i) { i.classList.add('e-field'); i.setAttribute('name', name); } };
-        setField('#cfFirearm', 'FirearmType');
-        setField('#cfCaliber', 'Caliber');
-        setField('#cfParticipants', 'Participants');
-        setField('#cfQualification', 'QualificationId');
+        if (isAdmin) setField('#cfGroup', 'GroupId');
+        setField('#cfHeadcount', 'Headcount');
+        setField('#cfFirearms', 'FirearmTypes');
+        setField('#cfTargetType', 'TargetType');
+        setField('#cfTargetDistance', 'TargetDistanceYards');
+        setField('#cfTargetCount', 'TargetCount');
         setField('#cfRso', 'RsoRequested');
-        if (isAdmin) setField('#cfCustomer', 'CustomerId');
 
-        // Update rule hint when the range changes.
         const rangeInput = el.querySelector('input[name="RangeId"]');
         const rangeDdl = rangeInput && rangeInput.ej2_instances && rangeInput.ej2_instances[0];
-        if (rangeDdl && rangeDdl.addEventListener) rangeDdl.addEventListener('change', e => updateEditorHint(e.value));
+        if (rangeDdl && rangeDdl.addEventListener) rangeDdl.addEventListener('change', e => applyRangeToEditor(e.value, false));
     }
 
-    const range = rangesById[Number(data.RangeId)];
-    editor.firearm.value = data.FirearmType || (range ? range.AllowedFirearms[0] : null);
-    editor.caliber.value = data.Caliber || '';
-    editor.participants.value = data.Participants || 1;
-    editor.qualification.value = data.QualificationId || '';
-    editor.rso.checked = !!data.RsoRequested;
-    if (editor.customer) editor.customer.value = data.CustomerId || '';
-    updateEditorHint(data.RangeId);
+    // The Scheduler fills ".e-field" inputs from the event data after popupOpen, so values are applied now and
+    // again once it has finished (otherwise defaults for a new reservation would be cleared).
+    const fill = () => {
+        if (editor.group) editor.group.value = data.GroupId || 0;
+        editor.headcount.value = data.Headcount || 1;
+        editor.firearms.value = (data.FirearmTypes && data.FirearmTypes.length) ? data.FirearmTypes.slice() : null;
+        editor.targetType.value = data.TargetType || null;
+        editor.targetDistance.value = data.TargetDistanceYards || null;
+        editor.targetCount.value = data.TargetCount || null;
+        editor.rso.checked = !!data.RsoRequested;
+        applyRangeToEditor(data.RangeId, !data.Id);
+    };
+    fill();
+    setTimeout(fill, 0);
 
-    // Subject placeholder
     const subj = el.querySelector('.e-subject');
-    if (subj) subj.setAttribute('placeholder', 'Reservation title (e.g. "Pistol practice")');
-    if (!data.Subject && subj && !data.Id) subj.value = '';
+    if (subj) subj.setAttribute('placeholder', 'Reservation title (e.g. "Quarterly qualification")');
 
-    // ---- Tier-aware restrictions on the built-in controls ----
     const allDayRow = el.querySelector('.e-all-day-container');
     if (allDayRow) allDayRow.style.display = isAdmin ? '' : 'none';
 
+    // UC-09: weekly / monthly only, must end, capped at the end of the following calendar year.
     const recEl = el.querySelector('.e-recurrenceeditor');
     const recEditor = recEl && recEl.ej2_instances && recEl.ej2_instances[0];
-    const repeatRow = recEl;
+    const repeatRow = recEl && (recEl.closest('.e-repeat-parent-row') || recEl.parentElement);
     const canRecur = isAdmin || (myPolicy && myPolicy.AllowRecurring);
     if (repeatRow) repeatRow.style.display = canRecur ? '' : 'none';
-    if (recEditor && !isAdmin && myPolicy) {
-        recEditor.endTypes = ['count', 'until'];                 // customers must give recurring bookings an end
-        recEditor.maxDate = addDays(startOfDay(facilityNow()), myPolicy.AdvanceBookingDays);
+    if (recEditor) {
+        recEditor.frequencies = ['none', 'weekly', 'monthly'];
+        recEditor.endTypes = ['until', 'count'];
+        recEditor.maxDate = recurrenceCap;
         recEditor.dataBind();
     }
 
     if (!isAdmin && myPolicy) {
-        const maxDate = addDays(startOfDay(facilityNow()), myPolicy.AdvanceBookingDays + 1);
         ['.e-start', '.e-end'].forEach(sel => {
             const i = el.querySelector(sel);
             const inst = i && i.ej2_instances && i.ej2_instances[0];
-            if (inst) { inst.min = startOfDay(facilityNow()); inst.max = maxDate; inst.dataBind(); }
+            if (inst) { inst.min = startOfDay(facilityNow()); inst.max = recurrenceCap; inst.dataBind(); }
         });
     }
 }
 
-function updateEditorHint(rangeId) {
-    const hint = document.getElementById('cfHint');
+// Range-specific firearm / target options and rule hint.
+function applyRangeToEditor(rangeId, isNew) {
     const r = rangesById[Number(rangeId)];
-    if (!hint) return;
-    if (!r) { hint.textContent = ''; return; }
-    const tierLimit = myPolicy ? ` · your tier: max ${myPolicy.MaxHoursPerBooking}h, ${myPolicy.AllowRecurring ? 'up to ' + myPolicy.MaxRecurringOccurrences + ' repeats' : 'no repeats'}` : '';
+    const hint = document.getElementById('cfHint');
+    if (!r) { if (hint) hint.textContent = ''; return; }
+    // Changing a dropdown's dataSource clears its value, so re-apply the (still valid) selection afterwards.
+    const keepFirearms = (editor.firearms.value || []).filter(f => r.AllowedFirearms.includes(f));
+    const keepTarget = r.AllowedTargetTypes.includes(editor.targetType.value) ? editor.targetType.value : null;
+    editor.firearms.dataSource = r.AllowedFirearms; editor.firearms.dataBind();
+    editor.targetType.dataSource = r.AllowedTargetTypes; editor.targetType.dataBind();
+    editor.targetDistance.max = r.MaxTargetDistanceYards;
+    editor.headcount.max = r.MaxHeadcount;
+    editor.firearms.value = keepFirearms.length ? keepFirearms : (isNew ? [r.AllowedFirearms[0]] : null);
+    editor.targetType.value = keepTarget || (isNew ? r.AllowedTargetTypes[0] : null);
+    editor.firearms.dataBind(); editor.targetType.dataBind();
+    const tierLimit = myPolicy ? ` · ${ctx.User.TierName}: max ${myPolicy.MaxHoursPerBooking} h, ${myPolicy.AllowRecurring ? 'weekly/monthly repeats' : 'no repeats'}` : '';
     hint.innerHTML =
-        `<strong>${escapeHtml(r.Name)}</strong>: ${escapeHtml(r.AllowedFirearms.join(', '))} · max ${r.MaxParticipants} participants · max ${r.MaxHoursPerBooking}h · ${r.OpenTime}-${r.CloseTime} · ${r.MinimumTier}+ tier` +
-        (r.RequiredQualification ? ` · <span class="warn">requires ${escapeHtml(r.RequiredQualification)} qualification ID</span>` : '') +
-        escapeHtml(tierLimit);
+        `<strong>${escapeHtml(r.Name)}</strong>: ${escapeHtml(r.AllowedFirearms.join(', '))} · targets ${escapeHtml(r.AllowedTargetTypes.join(', '))} up to ${r.MaxTargetDistanceYards} yd · ` +
+        `headcount ≤ ${r.MaxHeadcount} · ${r.OpenTime}-${r.CloseTime}` + escapeHtml(tierLimit) +
+        `<br/>Repeating series must end by <strong>${recurrenceCap.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</strong>.` +
+        (ctx.Settings.MondayExclusiveForTier4 && ctx.User.Tier !== 'Tier4' && !isAdmin ? ' Mondays are reserved for Tier 4 groups.' : '') +
+        (isAdmin ? '' : ' <span class="warn">Submitted requests are reviewed by AZGFD before confirmation.</span>');
 }
 
 /* ------------------------------------------------------------------------------------------
-   Toolbar: facility filter, eligible-range filter, admin override
+   Toolbar: facility filter, admin override
    ------------------------------------------------------------------------------------------ */
 function initToolbar() {
     const facilityDdl = new ej.dropdowns.DropDownList({
@@ -437,27 +498,21 @@ function initToolbar() {
     facilityDdl.appendTo('#facilityFilter');
     cartUi.facility = facilityDdl;
 
-    if (!isAdmin) {
-        cartUi.eligible = new ej.buttons.CheckBox({ label: 'Only ranges I can book', change: applyResourceFilter });
-        cartUi.eligible.appendTo('#eligibleOnly');
-    } else {
+    if (isAdmin) {
         cartUi.override = new ej.buttons.Switch({ checked: false });
         cartUi.override.appendTo('#adminOverride');
         const label = document.createElement('label');
         label.className = 'switch-label'; label.setAttribute('for', 'adminOverride');
-        label.textContent = 'Override tier rules on save';
+        label.textContent = 'Override tier policy on save';
         document.getElementById('adminOverride').closest('.e-switch-wrapper').insertAdjacentElement('afterend', label);
     }
     document.getElementById('refreshBtn').addEventListener('click', () => loadEvents());
 }
 
-// Resource-specific availability views: filter facilities / ranges shown in the scheduler.
+// Resource-specific availability views (only authorized ranges are sent to the page - UC-14).
 function applyResourceFilter() {
     const fid = cartUi.facility.value || 0;
-    const eligibleOnly = cartUi.eligible ? cartUi.eligible.checked : false;
-    const ranges = ctx.Ranges
-        .filter(r => !fid || r.FacilityId === fid)
-        .filter(r => !eligibleOnly || isRangeEligible(r.Id));
+    const ranges = ctx.Ranges.filter(r => !fid || r.FacilityId === fid);
     const facIds = new Set(ranges.map(r => r.FacilityId));
     scheduleObj.resources[0].dataSource = ctx.Facilities.filter(f => facIds.has(f.Id)).map(f => ({ id: f.Id, text: f.Name, color: f.Color }));
     scheduleObj.resources[1].dataSource = ranges.map(r => ({ id: r.Id, text: r.Name, groupId: r.FacilityId, color: r.Color }));
@@ -466,33 +521,35 @@ function applyResourceFilter() {
 }
 
 /* ------------------------------------------------------------------------------------------
-   Multi-slot / multi-date cart (one transaction)
+   UC-07 / UC-08: multi-date cart for ONE range
    ------------------------------------------------------------------------------------------ */
 function initCart() {
     cartUi.mode = new ej.buttons.Switch({ checked: false, change: e => document.body.classList.toggle('cart-on', e.checked) });
     cartUi.mode.appendTo('#cartMode');
-    cartUi.subject = new ej.inputs.TextBox({ placeholder: 'Title for all slots', floatLabelType: 'Auto', value: 'Range session' });
+    cartUi.subject = new ej.inputs.TextBox({ placeholder: 'Title for all dates', floatLabelType: 'Auto', value: 'Range session' });
     cartUi.subject.appendTo('#cartSubject');
-    cartUi.firearm = new ej.dropdowns.DropDownList({ dataSource: ctx.Firearms, placeholder: 'Firearm type', floatLabelType: 'Auto', value: 'Handgun' });
-    cartUi.firearm.appendTo('#cartFirearm');
-    cartUi.caliber = new ej.inputs.TextBox({ placeholder: 'Caliber', floatLabelType: 'Auto' });
-    cartUi.caliber.appendTo('#cartCaliber');
-    cartUi.participants = new ej.inputs.NumericTextBox({ placeholder: 'Participants', floatLabelType: 'Auto', min: 1, max: 50, value: 1, format: 'n0' });
-    cartUi.participants.appendTo('#cartParticipants');
-    cartUi.qualification = new ej.inputs.TextBox({ placeholder: 'Qualification ID (if required)', floatLabelType: 'Auto' });
-    cartUi.qualification.appendTo('#cartQualification');
     if (isAdmin) {
-        cartUi.customer = new ej.dropdowns.DropDownList({
-            dataSource: ctx.Customers.map(c => ({ Id: c.Id, Name: `${c.Name} (${c.Tier})` })),
-            fields: { text: 'Name', value: 'Id' }, placeholder: 'Book on behalf of', floatLabelType: 'Auto', value: ctx.Customers[0].Id
+        cartUi.group = new ej.dropdowns.DropDownList({
+            dataSource: ctx.Groups.map(g => ({ Id: g.Id, Name: `${g.Name} (${g.TierName})` })),
+            fields: { text: 'Name', value: 'Id' }, placeholder: 'Book on behalf of', floatLabelType: 'Auto', value: ctx.Groups[0].Id
         });
-        cartUi.customer.appendTo('#cartCustomer');
+        cartUi.group.appendTo('#cartGroup');
     }
+    cartUi.headcount = new ej.inputs.NumericTextBox({ placeholder: 'People', floatLabelType: 'Auto', min: 1, max: 100, value: 1, format: 'n0' });
+    cartUi.headcount.appendTo('#cartHeadcount');
+    cartUi.targetCount = new ej.inputs.NumericTextBox({ placeholder: 'Targets', floatLabelType: 'Auto', min: 1, max: 200, format: 'n0' });
+    cartUi.targetCount.appendTo('#cartTargetCount');
+    cartUi.firearms = new ej.dropdowns.MultiSelect({ dataSource: ctx.Firearms, placeholder: 'Firearm types', floatLabelType: 'Auto', mode: 'Box', value: ['Handgun'] });
+    cartUi.firearms.appendTo('#cartFirearms');
+    cartUi.targetType = new ej.dropdowns.DropDownList({ dataSource: ctx.TargetTypes, placeholder: 'Target', floatLabelType: 'Auto', value: 'Paper' });
+    cartUi.targetType.appendTo('#cartTargetType');
+    cartUi.targetDistance = new ej.inputs.NumericTextBox({ placeholder: 'Yards', floatLabelType: 'Auto', min: 1, max: 1000, value: 15, format: 'n0' });
+    cartUi.targetDistance.appendTo('#cartTargetDistance');
     cartUi.rso = new ej.buttons.CheckBox({ label: 'Request RSO' });
     cartUi.rso.appendTo('#cartRso');
-    cartUi.dayStart = new ej.calendars.TimePicker({ placeholder: 'Day start', floatLabelType: 'Auto', value: new Date(2000, 0, 1, 9, 0), step: 30 });
+    cartUi.dayStart = new ej.calendars.TimePicker({ placeholder: 'Start', floatLabelType: 'Auto', value: new Date(2000, 0, 1, 9, 0), step: 30 });
     cartUi.dayStart.appendTo('#cartDayStart');
-    cartUi.duration = new ej.inputs.NumericTextBox({ placeholder: 'Hours', floatLabelType: 'Auto', min: 1, max: 8, value: 1, format: 'n0' });
+    cartUi.duration = new ej.inputs.NumericTextBox({ placeholder: 'Hours', floatLabelType: 'Auto', min: 1, max: 8, value: 2, format: 'n0' });
     cartUi.duration.appendTo('#cartDuration');
 
     document.getElementById('cartCheck').addEventListener('click', () => submitCart(true));
@@ -503,9 +560,9 @@ function initCart() {
 
 function addCellsToCart(cells) {
     let added = 0;
-    cells.forEach(c => {
+    for (const c of cells) {
         const res = scheduleObj.getResourcesByIndex(c.groupIndex);
-        if (!res || !res.groupData) return;
+        if (!res || !res.groupData) continue;
         let start = new Date(c.startTime), end = new Date(c.endTime);
         if (c.isAllDay || (end - start) >= 24 * 3600000) {        // month view / all-day cell -> use default time
             const t = cartUi.dayStart.value || new Date(2000, 0, 1, 9, 0);
@@ -515,14 +572,34 @@ function addCellsToCart(cells) {
         const rangeId = res.groupData.RangeId, facilityId = res.groupData.FacilityId;
         const key = `${rangeId}|${start.getTime()}|${end.getTime()}`;
         const existing = cart.findIndex(i => i.key === key);
-        if (existing >= 0) { cart.splice(existing, 1); return; }   // clicking again toggles the slot off
+        if (existing >= 0) { cart.splice(existing, 1); continue; }   // clicking again toggles the slot off
+
+        // UC-08: one range per multi-date booking.
+        if (cart.length && cart[0].rangeId !== rangeId) {
+            showToast('Cannot add this slot', [ctx.SingleRangeMessage], 'e-toast-danger');
+            setCartResult(`<div class="msg err">${escapeHtml(ctx.SingleRangeMessage)}</div>`);
+            continue;
+        }
+        if (isMondayBlocked(start)) { showToast('Not available', ['Mondays are reserved exclusively for Tier 4 (Law Enforcement / Military) groups.'], 'e-toast-warning'); continue; }
+        if (!cart.length) applyRangeToCart(rangeId);
         cart.push({ key, id: --cartSeq, rangeId, facilityId, start, end });
         added++;
-    });
-    cart.sort((a, b) => a.start - b.start || a.rangeId - b.rangeId);
+    }
+    cart.sort((a, b) => a.start - b.start);
     renderCart();
     renderDataSource();
     if (added) setCartResult('');
+}
+
+function applyRangeToCart(rangeId) {
+    const r = rangesById[Number(rangeId)];
+    if (!r) return;
+    cartUi.firearms.dataSource = r.AllowedFirearms; cartUi.firearms.dataBind();
+    cartUi.firearms.value = [r.AllowedFirearms[0]];
+    cartUi.targetType.dataSource = r.AllowedTargetTypes; cartUi.targetType.dataBind();
+    cartUi.targetType.value = r.AllowedTargetTypes[0];
+    cartUi.targetDistance.max = r.MaxTargetDistanceYards;
+    if (cartUi.targetDistance.value > r.MaxTargetDistanceYards) cartUi.targetDistance.value = r.MaxTargetDistanceYards;
 }
 
 function cartItemToEvent(i) {
@@ -531,41 +608,46 @@ function cartItemToEvent(i) {
 
 function renderCart() {
     const ul = document.getElementById('cartList');
-    if (!cart.length) { ul.innerHTML = '<li class="empty">No slots selected</li>'; }
+    const rangeEl = document.getElementById('cartRange');
+    rangeEl.innerHTML = cart.length ? `Range: <strong>${escapeHtml(rangeLabel(cart[0].rangeId))}</strong> (locked for this booking)` : 'Range: <em>set by the first slot you pick</em>';
+    if (!cart.length) { ul.innerHTML = '<li class="empty">No dates selected</li>'; }
     else {
         ul.innerHTML = cart.map(i =>
-            `<li><span><strong>${escapeHtml(rangeLabel(i.rangeId))}</strong><br/>${i.start.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}, ` +
+            `<li><span>${i.start.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}, ` +
             `${i.start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} - ${i.end.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>` +
             `<button class="e-btn e-flat e-small" data-key="${i.key}" title="Remove">✕</button></li>`).join('');
         ul.querySelectorAll('button[data-key]').forEach(b => b.addEventListener('click', () => {
             cart = cart.filter(i => i.key !== b.dataset.key); renderCart(); renderDataSource();
         }));
     }
-    const limit = myPolicy ? ` / ${myPolicy.MaxSlotsPerTransaction} max` : '';
-    document.getElementById('cartBook').textContent = `Book all (${cart.length}${limit})`;
+    const limit = myPolicy ? ` / ${myPolicy.MaxDatesPerTransaction} max` : '';
+    document.getElementById('cartBook').textContent = `${isAdmin ? 'Book all' : 'Submit for review'} (${cart.length}${limit})`;
 }
 
 function setCartResult(html) { document.getElementById('cartResult').innerHTML = html; }
 
 async function submitCart(dryRun) {
-    if (!cart.length) { setCartResult('<div class="msg warn">Turn on multi-slot booking and click some slots first.</div>'); return; }
+    if (!cart.length) { setCartResult('<div class="msg warn">Turn on multi-date booking and click some slots first.</div>'); return; }
     const added = cart.map(i => toServer({
         Subject: cartUi.subject.value || 'Range session', StartTime: i.start, EndTime: i.end, RangeId: i.rangeId, FacilityId: i.facilityId,
-        FirearmType: cartUi.firearm.value, Caliber: cartUi.caliber.value, Participants: cartUi.participants.value,
-        QualificationId: cartUi.qualification.value, RsoRequested: cartUi.rso.checked,
-        CustomerId: cartUi.customer ? cartUi.customer.value : null
+        GroupId: cartUi.group ? cartUi.group.value : null, Headcount: cartUi.headcount.value, FirearmTypes: cartUi.firearms.value || [],
+        TargetType: cartUi.targetType.value, TargetDistanceYards: cartUi.targetDistance.value, TargetCount: cartUi.targetCount.value,
+        RsoRequested: cartUi.rso.checked
     }));
     const result = await submitBatch({ Added: added, Changed: [], Deleted: [], DryRun: dryRun, AdminOverride: isAdmin && cartUi.override ? cartUi.override.checked : false });
+    const warn = result.warnings && result.warnings.length ? '<ul class="tiny">' + result.warnings.map(w => '<li>' + escapeHtml(w) + '</li>').join('') + '</ul>' : '';
     if (result.ok) {
         if (dryRun) {
-            setCartResult(`<div class="msg ok">All ${cart.length} slot(s) are available and comply with the booking rules (${result.body.OccurrencesValidated} occurrence(s) checked).</div>`);
+            setCartResult(`<div class="msg ok">All ${cart.length} date(s) are available and comply with the booking rules.${warn}</div>`);
         } else {
-            setCartResult(`<div class="msg ok">Booked ${cart.length} slot(s) as transaction <code>${escapeHtml(result.body.BookingGroupId || 'single')}</code>.</div>`);
+            const pending = result.body.Status === 'Pending';
+            setCartResult(`<div class="msg ok">${cart.length} date(s) ${pending ? 'submitted for admin review' : 'booked'} as request <code>${escapeHtml(result.body.RequestId)}</code>. ` +
+                (pending ? `Track it in <a href="${appUrl('/Home/MyReservations')}">My reservations</a>.` : '') + `${warn}</div>`);
             cart = []; renderCart(); await loadEvents();
-            showToast('Multi-slot booking confirmed', [], 'e-toast-success');
+            showToast(pending ? 'Request submitted for review' : 'Booking confirmed', [], 'e-toast-success');
         }
     } else {
-        setCartResult('<div class="msg err"><strong>' + (dryRun ? 'Not bookable as selected:' : 'Nothing was booked (all-or-nothing):') + '</strong><ul>' +
+        setCartResult('<div class="msg err"><strong>' + (dryRun ? 'Not bookable as selected:' : 'Nothing was submitted (all-or-nothing):') + '</strong><ul>' +
             result.errors.map(e => '<li>' + escapeHtml(e) + '</li>').join('') + '</ul></div>');
     }
 }
@@ -575,30 +657,32 @@ async function submitCart(dryRun) {
    ------------------------------------------------------------------------------------------ */
 function renderPolicyCard() {
     const card = document.getElementById('policyCard');
+    const capText = recurrenceCap.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
     if (isAdmin) {
-        card.innerHTML = `<h3>Administrator</h3>
+        card.innerHTML = `<h3>AZGFD Administrator</h3>
           <ul class="kv">
+            <li>Bookings you enter for a group are approved immediately (and the group is emailed)</li>
             <li>Drag, resize and edit any reservation</li>
-            <li>Book on behalf of any customer</li>
-            <li>Optional tier-rule override (conflicts, blackouts and safety rules always apply)</li>
-            <li>Manage <a href="${appUrl('/Admin/Blackouts')}">blackouts</a> and <a href="${appUrl('/Admin/Policies')}">tier policies</a></li>
+            <li>Optional tier-policy override - conflicts, blackouts, Monday rule and range permissions always apply</li>
+            <li><a href="${appUrl('/Admin/Queue')}">Review queue</a> · <a href="${appUrl('/Admin/Blackouts')}">Blackouts</a> · <a href="${appUrl('/Admin/Groups')}">Permissions</a></li>
           </ul>`;
         return;
     }
     const p = myPolicy;
-    card.innerHTML = `<h3>Your booking policy <span class="badge tier-${p.Tier.toLowerCase()}">${p.Tier}</span></h3>
-      <p class="muted small">${escapeHtml(p.Audience)}</p>
+    const specialized = ctx.Ranges.filter(r => r.IsSpecialized).map(r => r.Name);
+    card.innerHTML = `<h3>${escapeHtml(ctx.User.GroupName)}</h3>
+      <p class="small"><span class="badge tier-${myTierRank}">${escapeHtml(ctx.User.TierName)}</span> <span class="muted">${escapeHtml(p.Audience)}</span> · ${escapeHtml(ctx.User.GroupRole)} user</p>
       <ul class="kv">
         <li><span>Book ahead</span><strong>up to ${p.AdvanceBookingDays} days</strong></li>
         <li><span>Lead time</span><strong>${p.MinLeadHours} h</strong></li>
         <li><span>Max per booking</span><strong>${p.MaxHoursPerBooking} h</strong></li>
-        <li><span>Bookings per day</span><strong>${p.MaxBookingsPerDay}</strong></li>
-        <li><span>Upcoming bookings</span><strong>${p.MaxActiveFutureBookings}</strong></li>
-        <li><span>Hours per month</span><strong>${p.MaxHoursPerMonth}</strong></li>
-        <li><span>Recurring</span><strong>${p.AllowRecurring ? 'up to ' + p.MaxRecurringOccurrences + ' occurrences' : 'not allowed'}</strong></li>
-        <li><span>Slots per transaction</span><strong>${p.MaxSlotsPerTransaction}</strong></li>
+        <li><span>Dates per booking</span><strong>${p.MaxDatesPerTransaction} (one range)</strong></li>
+        <li><span>Recurring</span><strong>${p.AllowRecurring ? 'weekly / monthly, until ' + capText : 'not available'}</strong></li>
+        <li><span>Mondays</span><strong>${ctx.Settings.MondayExclusiveForTier4 ? (ctx.User.Tier === 'Tier4' ? 'reserved for your tier' : 'Tier 4 only') : 'open'}</strong></li>
+        <li><span>Specialized ranges</span><strong>${specialized.length ? escapeHtml(specialized.join(', ')) : 'none granted'}</strong></li>
         <li><span>Change / cancel cutoff</span><strong>${p.CancellationCutoffHours} h</strong></li>
-      </ul>`;
+      </ul>
+      <p class="muted tiny">All requests are reviewed by AZGFD. You'll get an email when a request is approved or denied.</p>`;
 }
 
 /* ------------------------------------------------------------------------------------------ */

@@ -1,31 +1,49 @@
 @model List<AppUser>
 @{
     ViewData["Title"] = "Sign in";
+    var groups = (List<CorporateGroup>)ViewBag.Groups;
 }
 <section class="login">
     <h1>Choose a demo persona</h1>
     <p class="muted">
-        The POC uses local cookie authentication with an <strong>Admin</strong> role and four <strong>customer tiers</strong>.
-        In production this plugs into the customer's on-prem identity provider (AD / ADFS / OIDC) - no cloud identity service is required.
+        Corporate groups book as an organization (Primary user or Delegate). Requests go to the AZGFD review queue.
+        The POC uses local cookie sign-in; production plugs into the on-prem identity provider (AD / ADFS / OIDC).
+        <a href="~/Public/Calendar">Public availability calendar</a>
     </p>
+
+    <h3 class="section-title">AZGFD Administration</h3>
     <div class="persona-grid">
-        @foreach (var u in Model)
+        @foreach (var u in Model.Where(x => x.Role == Roles.Admin))
         {
             <form method="post" asp-action="Login" class="persona">
                 <input type="hidden" name="userId" value="@u.Id" />
                 <button type="submit" class="persona-card">
                     <span class="persona-name">@u.Name</span>
-                    @if (u.Role == Roles.Admin)
-                    {
-                        <span class="badge badge-admin">Administrator</span>
-                    }
-                    else
-                    {
-                        <span class="badge tier-@u.Tier?.ToString().ToLower()">@u.Tier tier</span>
-                    }
+                    <span class="badge badge-admin">AZGFD Administrator</span>
                     <span class="persona-desc">@u.Description</span>
                 </button>
             </form>
+        }
+    </div>
+
+    <h3 class="section-title">Corporate groups</h3>
+    <div class="persona-grid">
+        @foreach (var g in groups)
+        {
+            foreach (var u in Model.Where(x => x.GroupId == g.Id))
+            {
+                <form method="post" asp-action="Login" class="persona">
+                    <input type="hidden" name="userId" value="@u.Id" />
+                    <button type="submit" class="persona-card">
+                        <span class="persona-name">@u.Name</span>
+                        <span><span class="badge tier-@((int)g.Tier)">@TierNames.Display(g.Tier)</span> <span class="badge badge-role">@u.GroupRole</span></span>
+                        <span class="persona-desc"><strong>@g.Name</strong></span>
+                        <span class="persona-desc">
+                            @(g.RangePermissions.Count == 0 ? "No specialized range permissions" : "Specialized ranges: " + string.Join(", ", g.RangePermissions.Select(p => p.RangeId == 5 ? "High Power" : p.RangeId == 7 ? "Frankoma" : "#" + p.RangeId)))
+                        </span>
+                    </button>
+                </form>
+            }
         }
     </div>
 </section>

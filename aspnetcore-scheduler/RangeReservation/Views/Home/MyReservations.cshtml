@@ -1,0 +1,54 @@
+@{
+    ViewData["Title"] = "My reservations";
+    var group = ViewBag.Group as CorporateGroup;
+}
+<div class="page-head">
+    <h2>@group?.Name - reservations</h2>
+    <p class="muted small">Requests from every user in your group (primary user and delegates). New requests start as
+        <span class="status status-pending">Pending admin review</span> and you'll receive an email when AZGFD approves or denies them.
+        <a href="~/">Book a range</a></p>
+</div>
+<div class="tabs-row">
+    <button class="e-btn e-small active" data-filter="">All</button>
+    <button class="e-btn e-small" data-filter="Pending">Pending</button>
+    <button class="e-btn e-small" data-filter="Approved">Approved</button>
+    <button class="e-btn e-small" data-filter="Denied">Denied</button>
+    <button class="e-btn e-small" data-filter="Cancelled">Cancelled</button>
+</div>
+<div class="admin-grid queue-grid">
+    <div id="list" class="req-list"><p class="muted">Loading…</p></div>
+    <section class="card">
+        <h3>Email notifications</h3>
+        <div id="mails" class="small"></div>
+    </section>
+</div>
+
+@section Scripts {
+    <script src="~/js/requests.js" asp-append-version="true"></script>
+    <script>
+        (function () {
+            const { api, card, esc, fmt } = window.Requests;
+            let filter = '';
+            const toast = new ej.notifications.Toast({ position: { X: 'Right', Y: 'Top' }, showCloseButton: true }); toast.appendTo('#toast');
+            async function load() {
+                const res = await api('/api/requests' + (filter ? '?status=' + filter : ''));
+                const host = document.getElementById('list');
+                host.innerHTML = res.body && res.body.length ? res.body.map(r => card(r, 'group')).join('') : '<p class="muted">No requests.</p>';
+                host.querySelectorAll('[data-cancel]').forEach(b => b.onclick = async () => {
+                    const r = await api(`/api/requests/${encodeURIComponent(b.dataset.cancel)}/cancel`, { method: 'POST' });
+                    if (r.ok) { toast.show({ title: 'Request cancelled', cssClass: 'e-toast-success' }); load(); }
+                    else b.closest('.req').querySelector('.req-msg').innerHTML = '<div class="msg err">' + (r.body.Errors || []).map(esc).join('<br/>') + '</div>';
+                });
+                const mails = await api('/api/notifications');
+                document.getElementById('mails').innerHTML = mails.body && mails.body.length
+                    ? mails.body.map(m => `<div class="mail"><div><strong>${esc(m.Subject)}</strong></div><div class="muted">To: ${esc(m.To)} · ${fmt(m.SentAt)}</div><pre>${esc(m.Body)}</pre></div>`).join('')
+                    : '<p class="muted">No notifications yet.</p>';
+            }
+            document.querySelectorAll('[data-filter]').forEach(b => b.onclick = () => {
+                document.querySelectorAll('[data-filter]').forEach(x => x.classList.remove('active'));
+                b.classList.add('active'); filter = b.dataset.filter; load();
+            });
+            load();
+        })();
+    </script>
+}

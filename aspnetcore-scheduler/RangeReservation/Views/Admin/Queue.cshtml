@@ -1,0 +1,88 @@
+@{
+    ViewData["Title"] = "Review queue";
+}
+<div class="page-head">
+    <h2>Reservation review queue</h2>
+    <p class="muted small">Each request is re-validated against the live calendar (conflicts, blackouts, Monday rule, range permissions,
+        firearm / target restrictions). Approving or denying updates the group's dashboard and emails the submitter and group contact.</p>
+</div>
+<div class="tabs-row">
+    <button class="e-btn e-small active" data-filter="Pending">Pending</button>
+    <button class="e-btn e-small" data-filter="Approved">Approved</button>
+    <button class="e-btn e-small" data-filter="Denied">Denied</button>
+    <button class="e-btn e-small" data-filter="">All</button>
+</div>
+<div class="admin-grid queue-grid">
+    <div id="queue" class="req-list"><p class="muted">Loading…</p></div>
+    <section class="card">
+        <h3>Sent notifications</h3>
+        <div id="mails" class="small"></div>
+    </section>
+</div>
+
+<div id="denyDialog" style="display:none">
+    <p class="small">The reason is shown on the group's dashboard and included in the denial email.</p>
+    <textarea id="denyReason" rows="4" style="width:100%" placeholder="Reason for denial (required)"></textarea>
+    <div id="denyError" class="result"></div>
+</div>
+
+@section Scripts {
+    <script src="~/js/requests.js" asp-append-version="true"></script>
+    <script>
+        (function () {
+            const { api, card, esc, fmt } = window.Requests;
+            let filter = 'Pending', denyFor = null;
+            const toast = new ej.notifications.Toast({ position: { X: 'Right', Y: 'Top' }, showCloseButton: true }); toast.appendTo('#toast');
+
+            const dialog = new ej.popups.Dialog({
+                header: 'Deny reservation request', width: '460px', isModal: true, visible: false, showCloseIcon: true,
+                target: document.body, animationSettings: { effect: 'None' },
+                buttons: [
+                    { buttonModel: { content: 'Deny request', cssClass: 'e-danger', isPrimary: true }, click: confirmDeny },
+                    { buttonModel: { content: 'Cancel' }, click: () => dialog.hide() }
+                ]
+            });
+            document.getElementById('denyDialog').style.display = '';
+            dialog.appendTo('#denyDialog');
+
+            async function load() {
+                const res = await api('/api/requests' + (filter ? '?status=' + filter : ''));
+                const host = document.getElementById('queue');
+                host.innerHTML = res.body && res.body.length ? res.body.map(r => card(r, 'admin')).join('') : '<p class="muted">Nothing here.</p>';
+                host.querySelectorAll('[data-approve]').forEach(b => b.onclick = () => approve(b.dataset.approve, b));
+                host.querySelectorAll('[data-deny]').forEach(b => b.onclick = () => { denyFor = b.dataset.deny; document.getElementById('denyReason').value = ''; document.getElementById('denyError').innerHTML = ''; dialog.show(); });
+                loadMails();
+            }
+
+            async function approve(id, btn) {
+                btn.disabled = true;
+                const res = await api(`/api/requests/${encodeURIComponent(id)}/approve`, { method: 'POST' });
+                if (res.ok) { toast.show({ title: `${id} approved`, content: 'Confirmation email sent.', cssClass: 'e-toast-success' }); load(); }
+                else {
+                    btn.disabled = false;
+                    btn.closest('.req').querySelector('.req-msg').innerHTML = '<div class="msg err"><strong>Cannot approve:</strong><ul>' + (res.body.Errors || []).map(e => '<li>' + esc(e) + '</li>').join('') + '</ul></div>';
+                }
+            }
+
+            async function confirmDeny() {
+                const reason = document.getElementById('denyReason').value;
+                const res = await api(`/api/requests/${encodeURIComponent(denyFor)}/deny`, { method: 'POST', body: JSON.stringify({ Reason: reason }) });
+                if (res.ok) { dialog.hide(); toast.show({ title: `${denyFor} denied`, content: 'Denial notice sent.', cssClass: 'e-toast-warning' }); load(); }
+                else document.getElementById('denyError').innerHTML = '<div class="msg err">' + (res.body.Errors || []).map(esc).join('<br/>') + '</div>';
+            }
+
+            async function loadMails() {
+                const res = await api('/api/notifications');
+                document.getElementById('mails').innerHTML = res.body && res.body.length
+                    ? res.body.map(m => `<div class="mail"><div><strong>${esc(m.Subject)}</strong></div><div class="muted">To: ${esc(m.To)} · ${fmt(m.SentAt)} · via ${esc(m.DeliveredVia)}</div><pre>${esc(m.Body)}</pre></div>`).join('')
+                    : '<p class="muted">No notifications sent yet.</p>';
+            }
+
+            document.querySelectorAll('[data-filter]').forEach(b => b.onclick = () => {
+                document.querySelectorAll('[data-filter]').forEach(x => x.classList.remove('active'));
+                b.classList.add('active'); filter = b.dataset.filter; load();
+            });
+            load();
+        })();
+    </script>
+}
